@@ -1,5 +1,7 @@
 # Phase: Bridge Terrain XML
 
+> **Status: AUDIT COMPLETE**
+
 ## Goal
 
 Create `scene_mjx_feetonly_bridge.xml` in the Go1 xmls directory. This scene composes the existing Go1 robot with a three-part bridge terrain (Platform A → narrow bridge beam → Platform B). The bridge geom is named so Python code can resize its width for curriculum learning without reloading the model.
