@@ -1,6 +1,6 @@
 # Phase: Bridge Terrain XML
 
-> **Status: AUDIT COMPLETE**
+> **Status: PLAN AUDIT COMPLETE**
 
 ## Goal
 
@@ -44,6 +44,8 @@ Two MuJoCo-specific things to know before reading the table:
 | `platform_b` | `5.5 0 0.25`  | `1.5 1.0 0.25` | 3×2×0.5 m   |
 
 > **Visual verification required**: After creating the XML, open it in the MuJoCo viewer (`mjpython -m mujoco.viewer --mjcf=<path>`) and verify the geometry visually. Half-extent arithmetic is easy to get wrong and hard to audit from numbers alone — confirm that platforms and bridge are flush (no gaps or z-fighting at seams), the bridge is centered on y=0, and the robot spawns standing on Platform A rather than inside or above it.
+>
+> ✅ **PASSED (2026-05-17)** — Seams flush, no gaps, bridge centered on y=0, top surfaces flush at z=0.5m.
 
 The `bridge` geom name is the contract with Python — `mj_model.geom("bridge").id` is how Python looks up the geom to patch its size.
 
@@ -86,6 +88,8 @@ The `home` keyframe spawns the robot on Platform A:
 > mjpython -m mujoco.viewer --mjcf=mujoco_playground/_src/locomotion/go1/xmls/scene_mjx_feetonly_bridge.xml
 > ```
 > Check the full picture: robot centered on Platform A, feet flush with the surface (no sinking or floating), facing +x, no joint-limit violations or leg splaying at spawn. Adjust any part of the keyframe until it looks correct.
+>
+> ✅ **PASSED (2026-05-17)** — Robot centered on Platform A, feet flush with surface, facing +x, no clipping or joint violations. Note: MuJoCo's "Reset" button resets to qpos=0 (not the keyframe) — use "Load key" to restore spawn pose; this is expected viewer behaviour.
 
 ---
 
