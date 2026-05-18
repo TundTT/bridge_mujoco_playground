@@ -117,6 +117,12 @@ Add `"Go1BridgeCrossing"` to `_envs` and `_cfgs` in `locomotion/__init__.py`, po
 
 ---
 
+## If Training Goes Badly — Things To Try
+
+- **Observation history stacking**: `history_len=1` exists in `default_config()` but is not implemented anywhere — it's a dead config field. If the robot struggles to detect lateral drift or gait phase, wire up a rolling obs buffer in `reset()` and `step()`. Each step shifts the buffer and inserts the new obs; the policy receives all `history_len` frames flattened (46 × history_len dimensions). The neural network input size must be updated to match. Start with `history_len=5` (5 previous timesteps).
+
+---
+
 ## What Is Still TBD
 
 - **`fall_threshold`**: 0.2 is a starting guess. Sweep `{0.1, 0.2, 0.35}` in early training runs and pick the value that gives clean episode boundaries without spurious truncations.
