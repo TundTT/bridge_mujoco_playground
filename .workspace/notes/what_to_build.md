@@ -7,7 +7,7 @@ Think of it like setting up a training facility for an athlete:
 **1. Build the arena** (`bridge_terrain_xml`)
 Before any training can happen, the physical space must exist. This is the bridge, the platforms, the world the robot inhabits. You can't train an athlete in a gym that hasn't been built yet.
 
-**2. Write the rulebook** (`go2_environment_module`) ← we're here
+**2. Write the rulebook** (`go1_environment_module`) ← we're here
 The arena alone does nothing. Someone needs to define: what does the robot observe, what counts as success, what counts as failure, and how is performance scored. This is the rulebook that turns a static 3D scene into a trainable task.
 
 **3. Add it to the catalog** (`register_environment`)

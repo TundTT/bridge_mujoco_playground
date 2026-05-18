@@ -8,7 +8,7 @@ Implementation plans are kept in @Plan/ — note these are subject to change.
 
 ## Project Overview
 
-This repo contains a fork of Google DeepMind's `mujoco_playground` library, located in `bridge_mujoco_playground/`. The goal is to implement a **Narrow Bridge Locomotion Task** (see Task.md) — a new MJX environment where a legged robot (Unitree Go2 quadruped or Unitree H1 humanoid) must traverse a narrow bridge of configurable width between two platforms, supporting curriculum learning.
+This repo contains a fork of Google DeepMind's `mujoco_playground` library, located in `bridge_mujoco_playground/`. The goal is to implement a **Narrow Bridge Locomotion Task** (see Task.md) — a new MJX environment where a legged robot (Unitree Go1 quadruped) must traverse a narrow bridge of configurable width between two platforms, supporting curriculum learning.
 
 All work happens inside `bridge_mujoco_playground/`. Run commands from that directory.
 
@@ -106,15 +106,12 @@ The locomotion sub-registry in `mujoco_playground/_src/locomotion/__init__.py` m
 
 The bridge environment should follow the pattern of existing locomotion tasks. The recommended approach:
 
-1. **Create `mujoco_playground/_src/locomotion/go2/`** (for Go2) or reuse `go1/` adapted for Go2 from menagerie, with:
-   - `go2_constants.py` — XML paths, sensor/joint names
-   - `base.py` — `Go2Env(MjxEnv)`
-   - `bridge.py` — `BridgeEnv` with `default_config()` (include `bridge_width` param), `reset()`, `step()`, reward for forward progress + fall termination
+1. **Add `go1/bridge.py`** — `BridgeCrossing(Go1Env)` with `default_config()` (includes `bridge_half_width` and `fall_threshold` params), `reset()`, `step()`, reward for forward progress + fall termination. Go1 already has `base.py`, `go1_constants.py`, and the bridge XML.
 
-2. **Create the bridge XML** in `xmls/scene_mjx_bridge.xml` — compose the robot MJCF with a parametric terrain (two platforms + narrow beam). Bridge width can be a parameter set at model-load time or via geom size modification in `reset()`.
+2. **Bridge XML** is already at `go1/xmls/scene_mjx_feetonly_bridge.xml` — three-part terrain (platform_a → bridge → platform_b) with per-foot contact sensors in `sensor_bridge_feet.xml`.
 
-3. **Register** in `mujoco_playground/_src/locomotion/__init__.py` using `register_environment()` or by adding to `_envs`/`_cfgs` dicts.
+3. **Register** `Go1BridgeCrossing` in `mujoco_playground/_src/locomotion/__init__.py` by adding to `_envs`/`_cfgs` dicts.
 
 4. **Add PPO config** in `mujoco_playground/config/locomotion_params.py`.
 
-Robot XML assets are in `mujoco_playground/external_deps/mujoco_menagerie/` (auto-downloaded). Use `mjx_env.MENAGERIE_PATH / "unitree_go2"` for Go2 and `mjx_env.MENAGERIE_PATH / "unitree_h1"` for H1.
+Robot XML assets are in `mujoco_playground/external_deps/mujoco_menagerie/` (auto-downloaded). Use `mjx_env.MENAGERIE_PATH / "unitree_go1"` for Go1.
