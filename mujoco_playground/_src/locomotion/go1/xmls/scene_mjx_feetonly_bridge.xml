@@ -42,6 +42,10 @@
     Adjust pos/size together to move or resize — changing one without the other shifts seams.
   -->
   <worldbody>
+    <camera name="bridge" pos="1.325 -8.462 5.889" xyaxes="1.000 -0.000 0.000 0.000 0.465 0.885"/>
+    <camera name="follow" mode="trackcom" target="trunk"
+            pos="-1.996 -0.573 1.097" xyaxes="0.236 -0.972 -0.000 0.320 0.078 0.944"/>
+
     <!-- platform_a: x = -3 to 0,  full footprint 3m × 2m × 0.5m -->
     <geom name="platform_a" class="terrain" material="platform"
           pos="-1.5 0 0.25" size="1.5 1.0 0.25"/>

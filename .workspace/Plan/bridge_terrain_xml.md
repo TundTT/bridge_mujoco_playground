@@ -105,6 +105,41 @@ The robot XML already defines `track`, `top`, `side`, and `back` cameras attache
 
 > **Manual verification required (human only — agents cannot do this)**: After creating the XML, open it in the MuJoCo viewer and confirm the default view from the `statistic` framing shows the entire terrain span — both platforms and the full bridge — simultaneously. Then switch to the `track` camera and walk the robot across the bridge to confirm the camera follows without clipping or losing sight of the robot mid-crossing. Adjust `center`, `extent`, or camera definitions if the framing is too tight or too loose.
 
+### Adding or adjusting named cameras
+
+**Capturing a camera angle from the viewer:**
+Position the free camera in the viewer to the desired angle, then press `Ctrl+C`. The viewer copies the current camera as XML, e.g.:
+```xml
+<camera name="myview" pos="1.3 -8.5 5.9" xyaxes="1 0 0 0 0.47 0.88"/>
+```
+Paste it inside `<worldbody>` in the scene XML and it appears in the Camera dropdown on next launch.
+
+**`trackcom` cameras and the compile-time offset problem:**
+A camera with `mode="trackcom" target="trunk"` translates with the robot's trunk COM. However, MuJoCo computes the camera's offset from the trunk COM **at compile time** (default pose, before any keyframe is applied). If the keyframe moves the robot from its default position, the camera will appear shifted by exactly that delta.
+
+To place a `trackcom` camera at a specific world-frame position when the robot is at the `home` keyframe:
+
+1. Read the trunk COM at both poses:
+```python
+mujoco.mj_forward(model, data)
+trunk_default = data.xpos[model.body('trunk').id].copy()  # compile-time COM
+
+mujoco.mj_resetDataKeyframe(model, data, model.key('home').id)
+mujoco.mj_forward(model, data)
+trunk_keyframe = data.xpos[model.body('trunk').id].copy()  # keyframe COM
+
+shift = trunk_keyframe - trunk_default
+```
+
+2. Subtract the shift from your desired world-frame camera position:
+```python
+corrected_pos = desired_world_pos - shift
+```
+
+3. Use `corrected_pos` as the `pos` attribute in the XML camera element.
+
+For this scene, the shift is `(-1.5, 0.0, 0.333)` — the keyframe moves the robot 1.5m back in x and 0.333m up in z relative to the default pose. This value will change if the `home` keyframe is ever modified.
+
 ---
 
 ## Visual / materials
