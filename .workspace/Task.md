@@ -32,7 +32,7 @@ A locomotion challenge where a legged robot (humanoid or quadruped) must travers
 
 ## Robot
 
-- **Quadruped** — Unitree Go2 *(easier baseline, recommended first)*
+- **Quadruped** — Unitree Go1 *(easier baseline, recommended first)*
 - **Humanoid** — Unitree H1 *(harder, higher reward ceiling)*
 - Loaded from standard MuJoCo MJCF/URDF model files
 
