@@ -1,8 +1,8 @@
 # Phase: Go1 Bridge Environment Module
 
-> **Status: READY TO IMPLEMENT**
+> **Status: IMPLEMENTATION COMPLETED**
 >
-> The Go1 bridge XML (`go1/xmls/scene_mjx_feetonly_bridge.xml`) is already complete and visually verified (see `bridge_terrain_xml.md`). The remaining work is creating `go1/bridge.py` and registering it. No new XML, constants file, or base class is needed — Go1 already has all of those.
+> `go1/bridge.py` has been created and `Go1BridgeCrossing` is registered in `locomotion/__init__.py`. Two reward terms (`goal_reached`, `lateral_deviation`) are marked `[TO ADD]` and remain as follow-up work. PPO training config is tracked in `ppo_training_config.md`.
 
 ---
 
@@ -14,8 +14,6 @@ Go1 has a complete scaffolding:
 - `go1_mjx_feetonly.xml` — robot model with feetonly collision and full sensor set
 - `scene_mjx_feetonly_bridge.xml` — the bridge terrain scene (complete, verified)
 - `sensor_bridge_feet.xml` — contact sensors for each foot × {platform_a, bridge, platform_b}
-
-The only file to create is `go1/bridge.py`.
 
 ---
 
