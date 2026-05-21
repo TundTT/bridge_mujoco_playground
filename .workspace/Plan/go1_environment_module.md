@@ -43,6 +43,8 @@ Two conditions combined with `|`:
 
 2. **Height termination** — `data.qpos[2] < config.fall_threshold`. Catches the case where the robot walks off the edge of a platform or the bridge end and is in free-fall. Tilt alone does not fire fast enough for this case because the robot remains upright during the initial fall.
 
+3. **[TO ADD] Success termination** — `data.qpos[0] > 7.0` (Platform B threshold, inferred from the `x_progress` normaliser at `bridge.py:269`). Without this, reaching Platform B does not end the episode — the robot keeps walking into the far wall for the remaining steps. Consequences: (a) rollout is diluted with uninformative transitions after the task is complete; (b) the `goal_reached` sparse bonus (see Reward Design) is one-shot and cannot fire again, so the tail of the episode contributes zero task signal. Add as a third branch in `_get_termination`: `return tilt_termination | height_termination | goal_reached`. Pair with the `goal_reached` reward term so the agent is rewarded *and* the episode cleanly ends at the same moment.
+
 `fall_threshold = 0.2` means the episode ends when the root body drops to 0.2m — which is 0.3m below the 0.5m platform surface. This value is a starting guess; it should be swept in early training runs. Too high triggers spurious truncations when the robot leans over the edge; too low wastes training steps on a long free-fall.
 
 ---

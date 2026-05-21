@@ -1,6 +1,6 @@
 # Phase: PPO Training Config
 
-> **Status: AWAITING AUDIT**
+> **Status: AUDIT APPROVED**
 >
 > `bridge.py` is complete and `Go1BridgeCrossing` is registered. The only blocker before
 > `train-jax-ppo --env_name Go1BridgeCrossing` works is adding the env to
@@ -28,16 +28,13 @@ elif env_name == "Go1BridgeCrossing":
     )
 ```
 
-Also add `"Go1BridgeCrossing"` to the RSL-RL config (see below) — optional for now,
-but keeps the two configs consistent.
-
 ---
 
 ## Rationale for Each Hyperparameter
 
 | Parameter | Value | Reason |
 |---|---|---|
-| `num_timesteps` | 100M | Comparable to `Go1Handstand` (simpler task than joystick command tracking; start here and extend to 200M if the policy plateaus) |
+| `num_timesteps` | 100M | Bridge crossing is less complex than joystick command tracking, and roughly comparable to `Go1Handstand`. Use Go1Handstand's budget as the baseline; extend to 200M if the policy plateaus. |
 | `num_evals` | 10 | One checkpoint every 10M steps — enough resolution to catch reward plateaus early |
 | `discounting` | 0.99 | Longer horizon than the 0.97 default. The bridge is ~4m and takes ~200 steps at the robot's natural pace; the robot must credit reaching Platform B back from up to 200 steps away. 0.97^200 ≈ 0.002 — too much discounting wipes out the goal signal. |
 | `entropy_cost` | 0.01 | Default value. Bridge task requires exploration to discover that walking forward is safe — leave entropy encouragement on until the policy is clearly converging. |
@@ -50,27 +47,6 @@ but keeps the two configs consistent.
 | `unroll_length` | 20 (default) | 20 steps × 0.02s = 0.4s of rollout per update. Covers roughly one gait cycle. |
 | `num_minibatches` | 32 (default) | Standard for this batch size. |
 | `max_grad_norm` | 1.0 (default) | Keeps training stable with the narrow platform termination spikes. |
-
----
-
-## RSL-RL Config (Optional)
-
-Add to `rsl_rl_config()` in the same file, inside the existing `if env_name in (...)` block for `max_iterations = 1000`:
-
-```python
-if env_name in (
-    "Go1Getup",
-    "BerkeleyHumanoidJoystickFlatTerrain",
-    "G1Joystick",
-    "Go1JoystickFlatTerrain",
-    "Go1BridgeCrossing",   # <-- add this
-):
-    rl_config.max_iterations = 1000
-```
-
-The RSL-RL config is otherwise fine with defaults. If you want to tune it further:
-- `algorithm.gamma = 0.99` to match the Brax discounting
-- `num_steps_per_env = 24` is already suitable (0.48s rollout)
 
 ---
 
@@ -102,6 +78,19 @@ Platform B in > 60% of eval episodes.
 
 ---
 
+## Hardware
+
+**Available:** 2× NVIDIA RTX 6000, 98 GB VRAM each.
+
+**Strategy:** run standard config first (smoke test → full Stage 1 run). Only tune for hardware after the standard run validates the config end-to-end.
+
+**Hardware optimisation (post-validation):**
+- Increase `num_envs` to `32768` or `65536` — VRAM is not the constraint.
+- Check multi-GPU support: `python -c "import jax; print(jax.devices())"`. If both GPUs show up and the trainer uses `pmap`, envs are split automatically — set `num_envs` to a multiple of 2 (e.g. `16384`).
+- Parallel curriculum: run Stage 1 and Stage 2 simultaneously, one job per GPU.
+
+---
+
 ## Training Commands
 
 ```sh
@@ -118,6 +107,10 @@ train-jax-ppo --env_name Go1BridgeCrossing \
 
 # With WandB logging
 train-jax-ppo --env_name Go1BridgeCrossing --use_wandb \
+  --playground_config_overrides '{"bridge_half_width": 0.4}'
+
+# Hardware-optimised run (post smoke test validation only)
+train-jax-ppo --env_name Go1BridgeCrossing --num_envs 32768 \
   --playground_config_overrides '{"bridge_half_width": 0.4}'
 ```
 
