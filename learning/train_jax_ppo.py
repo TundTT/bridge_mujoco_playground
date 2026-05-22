@@ -322,7 +322,7 @@ def main(argv):
           "wandb is required for --use_wandb. "
           "Install via: pip install wandb"
       )
-    wandb.init(project="mjxrl", name=exp_name)
+    wandb.init(project="bridge_crossing", entity="Tund", name=exp_name)
     wandb.config.update(env_cfg.to_dict())
     wandb.config.update({"env_name": _ENV_NAME.value})
 
