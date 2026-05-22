@@ -1,6 +1,6 @@
 # Phase: PPO Training Config
 
-> **Status: AUDIT APPROVED**
+> **Status: IMPLEMENTATION COMPLETED**
 >
 > `bridge.py` is complete and `Go1BridgeCrossing` is registered. The only blocker before
 > `train-jax-ppo --env_name Go1BridgeCrossing` works is adding the env to
