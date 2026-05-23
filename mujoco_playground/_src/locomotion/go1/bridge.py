@@ -197,7 +197,9 @@ class BridgeCrossing(go1_base.Go1Env):
     rewards = {
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
     }
-    reward = jp.clip(sum(rewards.values()) * self.dt, 0.0, 10000.0)
+    reward = jp.nan_to_num(
+        jp.clip(sum(rewards.values()) * self.dt, 0.0, 10000.0), nan=0.0
+    )
 
     state.info["last_last_act"] = state.info["last_act"]
     state.info["last_act"] = action
