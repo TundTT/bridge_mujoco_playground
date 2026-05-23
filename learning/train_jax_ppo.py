@@ -58,10 +58,15 @@ except ImportError:
 
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0,1")
 os.environ.setdefault("NCCL_DEBUG", "WARN")
+# PCIe-only (no NVLink) tuning for dual RTX PRO 6000 Blackwell
+os.environ.setdefault("NCCL_P2P_LEVEL", "SYS")
+os.environ.setdefault("NCCL_MIN_NCHANNELS", "8")
+os.environ.setdefault("NCCL_IB_DISABLE", "1")
 
 _XLA_AUTOTUNE_PATH = "/tmp/xla_autotune.pbtxt"
 _xla_flags_extra = [
     "--xla_gpu_enable_latency_hiding_scheduler=true",
+    "--xla_gpu_shard_autotuning=false",
     "--xla_gpu_triton_gemm_any=true",
     f"--xla_gpu_dump_autotune_results_to={_XLA_AUTOTUNE_PATH}",
 ]

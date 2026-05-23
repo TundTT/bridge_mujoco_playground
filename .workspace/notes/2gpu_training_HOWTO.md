@@ -53,10 +53,15 @@ Set in `train_jax_ppo.py` before any JAX operation:
 ```python
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0,1")
 os.environ.setdefault("NCCL_DEBUG", "WARN")
+# PCIe-only (no NVLink) tuning for dual RTX PRO 6000 Blackwell
+os.environ.setdefault("NCCL_P2P_LEVEL", "SYS")
+os.environ.setdefault("NCCL_MIN_NCHANNELS", "8")
+os.environ.setdefault("NCCL_IB_DISABLE", "1")
 
 _XLA_AUTOTUNE_PATH = "/tmp/xla_autotune.pbtxt"
 _xla_flags_extra = [
     "--xla_gpu_enable_latency_hiding_scheduler=true",
+    "--xla_gpu_shard_autotuning=false",           # workaround for Blackwell XLA hang
     "--xla_gpu_triton_gemm_any=true",
     f"--xla_gpu_dump_autotune_results_to={_XLA_AUTOTUNE_PATH}",
 ]
@@ -133,9 +138,46 @@ cat /proc/<PID>/status | grep VmRSS  # memory usage
 
 ---
 
+## Known issue: IOMMU/ACS causing silent NCCL P2P failure on Blackwell
+
+**Symptom:** Training appears to run (GPUs at 100% compute) but 10M steps takes 40+ minutes instead of ~10.
+
+**Root cause:** IOMMU is enabled on this system (53 IOMMU groups active). The two GPUs sit on separate PCIe buses (`c1:00.0` and `e1:00.0`, topology: `NODE`). With IOMMU + ACS active, NCCL cannot use direct P2P and silently falls back to a slow host-memory path for AllReduce gradient sync.
+
+**GPU topology:**
+```
+        GPU0  GPU1
+GPU0     X    NODE    ← NODE = PCIe via host bridge, no NVLink
+GPU1    NODE    X
+```
+
+**Confirmed diagnostic result (2026-05-23):**
+
+| Config | 1M env steps | Extrapolated 100M steps |
+|--------|-------------|------------------------|
+| No P2P disable (broken IOMMU path) | 40+ min (didn't finish) | > 4 hours |
+| `NCCL_P2P_DISABLE=1` (host-memory AllReduce) | **~80 seconds** | ~2.2 hours |
+| After BIOS fix (direct PCIe P2P) | estimated | ~25–35 min |
+
+**Quick diagnostic:**
+```bash
+NCCL_P2P_DISABLE=1 train-jax-ppo --env_name Go1BridgeCrossing \
+  --num_timesteps 1000000 --num_evals 1
+```
+If this is significantly faster than a run without the flag, IOMMU/P2P is the bottleneck.
+
+**Fix options (in order of preference):**
+1. **BIOS fix (permanent, best):** Disable ACS in BIOS + add `iommu=pt pci=realloc` to kernel cmdline (`/etc/default/grub`). See `bios_fix.md` for exact steps. ~4-6× faster than option 2.
+2. **Software workaround:** `NCCL_P2P_DISABLE=1` — prevents hangs, correct training, but slower (~2.2 hrs for 100M steps).
+
+**Note:** Until BIOS is fixed, single-GPU training with `CUDA_VISIBLE_DEVICES=0` and `num_envs=8192` may be faster than broken 2-GPU training.
+
+---
+
 ## What NOT to do
 
 - **Do not use `num_envs=16384`** — causes 8+ hour compile, possibly infinite
 - **Do not add `--xla_gpu_load_autotune_results_from` without checking the file exists** — hard crash
 - **Do not kill a run mid-compile expecting the cache to be valid** — partial cache files will be ignored on next run (bad hash), forcing full recompile
 - **Do not use `nohup ... > log 2>&1` without `sys.stdout.reconfigure(line_buffering=True)`** — Python block-buffers stdout in non-interactive mode and you'll see no output until the process exits
+- **Do not add `--xla_gpu_enable_async_collectives=true` to XLA_FLAGS** — not a valid flag in JAX 0.6.2, causes immediate XLA abort with "Unknown flag" error
