@@ -18,8 +18,14 @@ import datetime
 import functools
 import json
 import os
+import sys
 import time
 import warnings
+
+# Force line-buffered stdout so print() output appears immediately in logs
+# even when running under nohup or redirected to a file.
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
 
 from absl import app
 from absl import flags
@@ -50,11 +56,30 @@ except ImportError:
   wandb = None
 
 
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0,1")
+os.environ.setdefault("NCCL_DEBUG", "WARN")
+
+_XLA_AUTOTUNE_PATH = "/tmp/xla_autotune.pbtxt"
+_xla_flags_extra = [
+    "--xla_gpu_enable_latency_hiding_scheduler=true",
+    "--xla_gpu_triton_gemm_any=true",
+    f"--xla_gpu_dump_autotune_results_to={_XLA_AUTOTUNE_PATH}",
+]
+if os.path.exists(_XLA_AUTOTUNE_PATH):
+    _xla_flags_extra.append(
+        f"--xla_gpu_load_autotune_results_from={_XLA_AUTOTUNE_PATH}"
+    )
 xla_flags = os.environ.get("XLA_FLAGS", "")
-xla_flags += " --xla_gpu_triton_gemm_any=True"
-os.environ["XLA_FLAGS"] = xla_flags
+os.environ["XLA_FLAGS"] = " ".join([xla_flags] + _xla_flags_extra).strip()
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["MUJOCO_GL"] = "egl"
+
+# Persist compiled XLA kernels across runs so subsequent launches skip
+# the multi-minute autotuning phase.
+_JAX_CACHE_DIR = os.path.expanduser("~/.cache/jax_compilation_cache")
+os.makedirs(_JAX_CACHE_DIR, exist_ok=True)
+jax.config.update("jax_compilation_cache_dir", _JAX_CACHE_DIR)
+jax.config.update("jax_persistent_cache_min_compile_time_secs", 5)
 
 # Ignore the info logs from brax
 logging.set_verbosity(logging.WARNING)
