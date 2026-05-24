@@ -68,7 +68,7 @@ def default_config() -> config_dict.ConfigDict:
               success=5000.0,
               feet_air_time=0.1,
               progress_to_goal=3.0,
-              lateral_deviation=-2.0,
+              lateral_deviation=-4.0,
               heading=-2.0,
           ),
       ),
@@ -207,7 +207,7 @@ class BridgeCrossing(go1_base.Go1Env):
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
     }
     reward = jp.nan_to_num(
-        jp.clip(sum(rewards.values()) * self.dt, 0.0, 10000.0), nan=0.0
+        jp.clip(sum(rewards.values()) * self.dt, -10.0, 10000.0), nan=0.0
     )
 
     state.info["last_last_act"] = state.info["last_act"]
