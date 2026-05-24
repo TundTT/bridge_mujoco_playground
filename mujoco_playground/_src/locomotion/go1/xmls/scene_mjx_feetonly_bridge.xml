@@ -69,13 +69,13 @@
         - Robot faces +x (toward the bridge), no sideways lean
         - No joint-limit violations or splayed legs at spawn
       qpos breakdown:
-        "-1.5 0 0.778"      — root position: x=center of platform_a, z=0.5(surface)+0.278(stand height)
+        "-0.5 0 0.778"      — root position: x=0.5m before bridge entrance (centered on y=0), z=0.5(surface)+0.278(stand height)
         "1 0 0 0"           — quaternion: upright, facing +x
         "0.1 0.9 -1.8" ×4  — hip/thigh/knee angles for each leg (copied from flat terrain home keyframe)
       If the robot sinks or floats, adjust z (third number). If legs splay, adjust joint angles.
     -->
     <key name="home"
-      qpos="-1.5 0 0.778  1 0 0 0  0.1 0.9 -1.8 -0.1 0.9 -1.8 0.1 0.9 -1.8 -0.1 0.9 -1.8"
+      qpos="-0.5 0 0.778  1 0 0 0  0.1 0.9 -1.8 -0.1 0.9 -1.8 0.1 0.9 -1.8 -0.1 0.9 -1.8"
       ctrl="0.1 0.9 -1.8 -0.1 0.9 -1.8 0.1 0.9 -1.8 -0.1 0.9 -1.8"/>
   </keyframe>
 </mujoco>
