@@ -65,7 +65,7 @@ def default_config() -> config_dict.ConfigDict:
               action_rate=-0.01,
               energy=-0.001,
               termination=-1.0,
-              success=100.0,
+              success=300.0,
               feet_air_time=0.1,
               progress_to_goal=3.0,
               lateral_deviation=-2.0,
@@ -348,9 +348,12 @@ class BridgeCrossing(go1_base.Go1Env):
     return jp.clip(local_vel[0], 0.0, 2.0)
 
   def _reward_progress_to_goal(self, x_pos: jax.Array) -> jax.Array:
-    # Linear gradient from spawn (x=-1.5) to Platform B entrance (x=4.0).
-    # Gives a dense directional signal across the full terrain span.
-    return jp.clip((x_pos + 1.5) / 5.5, 0.0, 1.0)
+    # Log-shaped gradient from spawn (x=-1.5) to goal (x=5.5).
+    # Steep near spawn for fast early learning, tapers toward goal so the
+    # success bonus dominates the final push onto Platform B.
+    # Shift so log argument = 1.0 at spawn (log=0) and 8.0 at goal (log=2.079).
+    x_shifted = jp.clip(x_pos + 2.5, 1.0, 8.0)
+    return jp.log(x_shifted) / jp.log(jp.array(8.0))
 
   def _cost_lateral_deviation(self, y_pos: jax.Array) -> jax.Array:
     return jp.square(y_pos)
