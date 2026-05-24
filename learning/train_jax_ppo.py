@@ -586,8 +586,11 @@ def main(argv):
     frames = infer_env.render(
         traj, height=480, width=640, scene_option=scene_option
     )
-    media.write_video(logdir / f"rollout{i}.mp4", frames, fps=fps)
-    print(f"Rollout video saved as '{logdir}/rollout{i}.mp4'.")
+    video_path = logdir / f"rollout{i}.mp4"
+    media.write_video(video_path, frames, fps=fps)
+    print(f"Rollout video saved as '{video_path}'.")
+    if _USE_WANDB.value and wandb is not None:
+      wandb.log({f"rollout_video_{i}": wandb.Video(str(video_path), fps=fps, format="mp4")})
 
 
 def run():
