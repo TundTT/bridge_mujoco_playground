@@ -428,10 +428,14 @@ def main(argv):
   )
 
   times = [time.monotonic()]
+  metrics_history = []
 
   # Progress function for logging
   def progress(num_steps, metrics):
     times.append(time.monotonic())
+    metrics_history.append(
+        {"step": int(num_steps), **{k: float(v) for k, v in metrics.items()}}
+    )
 
     # Log to Weights & Biases
     if _USE_WANDB.value and not _PLAY_ONLY.value:
@@ -514,6 +518,11 @@ def main(argv):
   if len(times) > 1:
     print(f"Time to JIT compile: {times[1] - times[0]}")
     print(f"Time to train: {times[-1] - times[1]}")
+
+  metrics_path = logdir / "metrics_history.json"
+  with open(metrics_path, "w", encoding="utf-8") as fp:
+    json.dump(metrics_history, fp, indent=2)
+  print(f"Metrics history saved to: {metrics_path}")
 
   print("Starting inference...")
 
