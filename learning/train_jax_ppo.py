@@ -444,6 +444,16 @@ def main(argv):
       writer.flush()
     if _RUN_EVALS.value:
       print(f"{num_steps}: reward={metrics['eval/episode_reward']:.3f}")
+      # Per-term reward breakdown (from state.metrics populated by the env).
+      # Brax reports these under eval/episode_metrics/reward/<term>.
+      reward_terms = sorted(
+          (k, v) for k, v in metrics.items()
+          if "reward/" in k and k != "eval/episode_reward"
+      )
+      if reward_terms:
+        for k, v in reward_terms:
+          term = k.split("reward/")[-1]
+          print(f"  reward/{term}: {float(v):.5f}")
     if _LOG_TRAINING_METRICS.value:
       if "episode/sum_reward" in metrics:
         print(
