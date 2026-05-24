@@ -55,9 +55,9 @@ def default_config() -> config_dict.ConfigDict:
       ),
       reward_config=config_dict.create(
           scales=config_dict.create(
-              forward_vel=1.0,
+              forward_vel=2.0,
               orientation=-5.0,
-              alive=0.5,
+              alive=0.1,
               torques=-0.0002,
               action_rate=-0.01,
               energy=-0.001,
