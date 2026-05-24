@@ -43,6 +43,9 @@ def default_config() -> config_dict.ConfigDict:
       bridge_half_width=0.4,
       # Terminate if root z drops below this (0.3 m below the 0.5 m platform surface).
       fall_threshold=0.2,
+      # Terminate with success bonus when robot reaches this x (halfway into Platform B).
+      # Platform B spans x=4.0 to x=7.0; midpoint is 5.5.
+      goal_x=5.5,
       noise_config=config_dict.create(
           level=1.0,
           scales=config_dict.create(
@@ -62,6 +65,7 @@ def default_config() -> config_dict.ConfigDict:
               action_rate=-0.01,
               energy=-0.001,
               termination=-1.0,
+              success=100.0,
               feet_air_time=0.1,
               progress_to_goal=3.0,
               lateral_deviation=-2.0,
@@ -192,10 +196,12 @@ class BridgeCrossing(go1_base.Go1Env):
     state.info["swing_peak"] = jp.maximum(state.info["swing_peak"], p_fz)
 
     obs = self._get_obs(data, state.info)
-    done = self._get_termination(data)
+    failure = self._get_failure(data)
+    success = self._get_success(data)
+    done = failure | success
 
     rewards = self._get_reward(
-        data, action, state.info, done, first_contact, contact
+        data, action, state.info, failure, success, first_contact, contact
     )
     rewards = {
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
@@ -215,12 +221,14 @@ class BridgeCrossing(go1_base.Go1Env):
     done = done.astype(reward.dtype)
     return state.replace(data=data, obs=obs, reward=reward, done=done)
 
-  def _get_termination(self, data: mjx.Data) -> jax.Array:
-    # Tilt: z-axis past horizontal.
-    tilt_termination = self.get_upvector(data)[-1] < 0.0
-    # Height: root dropped below fall_threshold (walked off an edge).
-    height_termination = data.qpos[2] < self._config.fall_threshold
-    return tilt_termination | height_termination
+  def _get_failure(self, data: mjx.Data) -> jax.Array:
+    tilt = self.get_upvector(data)[-1] < 0.0
+    height = data.qpos[2] < self._config.fall_threshold
+    return tilt | height
+
+  def _get_success(self, data: mjx.Data) -> jax.Array:
+    # Robot has confidently crossed — reached halfway into Platform B.
+    return data.qpos[0] >= self._config.goal_x
 
   def _get_obs(
       self, data: mjx.Data, info: dict[str, Any]
@@ -310,7 +318,8 @@ class BridgeCrossing(go1_base.Go1Env):
       data: mjx.Data,
       action: jax.Array,
       info: dict[str, Any],
-      done: jax.Array,
+      failure: jax.Array,
+      success: jax.Array,
       first_contact: jax.Array,
       contact: jax.Array,
   ) -> dict[str, jax.Array]:
@@ -323,7 +332,8 @@ class BridgeCrossing(go1_base.Go1Env):
             action, info["last_act"], info["last_last_act"]
         ),
         "energy": self._cost_energy(data.qvel[6:], data.actuator_force),
-        "termination": self._cost_termination(done),
+        "termination": self._cost_termination(failure),
+        "success": self._reward_success(success),
         "progress_to_goal": self._reward_progress_to_goal(data.qpos[0]),
         "lateral_deviation": self._cost_lateral_deviation(data.qpos[1]),
         "heading": self._cost_heading(
@@ -369,6 +379,9 @@ class BridgeCrossing(go1_base.Go1Env):
 
   def _cost_termination(self, done: jax.Array) -> jax.Array:
     return done
+
+  def _reward_success(self, success: jax.Array) -> jax.Array:
+    return success.astype(jp.float32)
 
   def _reward_feet_air_time(
       self, air_time: jax.Array, first_contact: jax.Array
