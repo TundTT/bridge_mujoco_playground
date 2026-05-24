@@ -63,6 +63,7 @@ def default_config() -> config_dict.ConfigDict:
               energy=-0.001,
               termination=-1.0,
               feet_air_time=0.1,
+              progress_to_goal=3.0,
           ),
       ),
       impl="jax",
@@ -321,6 +322,7 @@ class BridgeCrossing(go1_base.Go1Env):
         ),
         "energy": self._cost_energy(data.qvel[6:], data.actuator_force),
         "termination": self._cost_termination(done),
+        "progress_to_goal": self._reward_progress_to_goal(data.qpos[0]),
         "feet_air_time": self._reward_feet_air_time(
             info["feet_air_time"], first_contact
         ),
@@ -328,6 +330,11 @@ class BridgeCrossing(go1_base.Go1Env):
 
   def _reward_forward_vel(self, local_vel: jax.Array) -> jax.Array:
     return jp.clip(local_vel[0], 0.0, 2.0)
+
+  def _reward_progress_to_goal(self, x_pos: jax.Array) -> jax.Array:
+    # Linear gradient from spawn (x=-1.5) to Platform B entrance (x=4.0).
+    # Gives a dense directional signal across the full terrain span.
+    return jp.clip((x_pos + 1.5) / 5.5, 0.0, 1.0)
 
   def _cost_orientation(self, upvector: jax.Array) -> jax.Array:
     return jp.sum(jp.square(upvector[:2]))
