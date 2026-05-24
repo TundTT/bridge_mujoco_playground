@@ -68,7 +68,7 @@ def default_config() -> config_dict.ConfigDict:
               success=5000.0,
               feet_air_time=0.1,
               progress_to_goal=3.0,
-              lateral_deviation=-4.0,
+              lateral_deviation=-3.0,
               heading=-2.0,
           ),
       ),
