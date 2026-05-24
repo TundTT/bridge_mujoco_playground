@@ -65,7 +65,7 @@ def default_config() -> config_dict.ConfigDict:
               action_rate=-0.01,
               energy=-0.001,
               termination=-1.0,
-              success=300.0,
+              success=5000.0,
               feet_air_time=0.1,
               progress_to_goal=3.0,
               lateral_deviation=-2.0,
