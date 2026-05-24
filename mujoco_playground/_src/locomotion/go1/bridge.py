@@ -64,7 +64,7 @@ def default_config() -> config_dict.ConfigDict:
               termination=-1.0,
               feet_air_time=0.1,
               progress_to_goal=3.0,
-              lateral_deviation=-0.5,
+              lateral_deviation=-2.0,
               heading=-2.0,
           ),
       ),
@@ -136,7 +136,7 @@ class BridgeCrossing(go1_base.Go1Env):
 
     # Small x/y jitter within platform_a footprint.
     rng, key = jax.random.split(rng)
-    dxy = jax.random.uniform(key, (2,), minval=-0.3, maxval=0.3)
+    dxy = jax.random.uniform(key, (2,), minval=-0.1, maxval=0.1)
     qpos = qpos.at[0:2].set(qpos[0:2] + dxy)
 
     # Small yaw jitter (±30°) so the policy learns to correct its heading.
