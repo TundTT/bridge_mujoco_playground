@@ -22,6 +22,10 @@ import sys
 import time
 import warnings
 
+# Must be set before importing mujoco — the package reads this at import time
+# to preload the EGL backend. Setting it later has no effect.
+os.environ["MUJOCO_GL"] = "egl"
+
 # Force line-buffered stdout so print() output appears immediately in logs
 # even when running under nohup or redirected to a file.
 sys.stdout.reconfigure(line_buffering=True)
@@ -77,7 +81,6 @@ if os.path.exists(_XLA_AUTOTUNE_PATH):
 xla_flags = os.environ.get("XLA_FLAGS", "")
 os.environ["XLA_FLAGS"] = " ".join([xla_flags] + _xla_flags_extra).strip()
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-os.environ["MUJOCO_GL"] = "egl"
 
 # Persist compiled XLA kernels across runs so subsequent launches skip
 # the multi-minute autotuning phase.
@@ -363,14 +366,12 @@ def main(argv):
 
   # Handle checkpoint loading
   if _LOAD_CHECKPOINT_PATH.value is not None:
-    # Convert to absolute path
     ckpt_path = epath.Path(_LOAD_CHECKPOINT_PATH.value).resolve()
-    if ckpt_path.is_dir():
-      latest_ckpts = list(ckpt_path.glob("*"))
-      latest_ckpts = [ckpt for ckpt in latest_ckpts if ckpt.is_dir()]
-      latest_ckpts.sort(key=lambda x: int(x.name))
-      latest_ckpt = latest_ckpts[-1]
-      restore_checkpoint_path = latest_ckpt
+    if ckpt_path.is_dir() and not ckpt_path.name.isdigit():
+      # Parent checkpoints dir — pick the latest numbered subdirectory.
+      step_dirs = [p for p in ckpt_path.glob("*") if p.is_dir() and p.name.isdigit()]
+      step_dirs.sort(key=lambda x: int(x.name))
+      restore_checkpoint_path = step_dirs[-1]
       print(f"Restoring from: {restore_checkpoint_path}")
     else:
       restore_checkpoint_path = ckpt_path
