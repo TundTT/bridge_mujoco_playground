@@ -39,8 +39,8 @@ def default_config() -> config_dict.ConfigDict:
       action_scale=0.3,
       history_len=1,
       soft_joint_pos_limit_factor=0.95,
-      # Curriculum: bridge y half-extent in metres (0.2 = 0.4 m wide).
-      bridge_half_width=0.2,
+      # Curriculum: bridge y half-extent in metres (0.4 = 0.8 m wide).
+      bridge_half_width=0.4,
       # Terminate if root z drops below this (0.3 m below the 0.5 m platform surface).
       fall_threshold=0.2,
       noise_config=config_dict.create(
@@ -64,6 +64,8 @@ def default_config() -> config_dict.ConfigDict:
               termination=-1.0,
               feet_air_time=0.1,
               progress_to_goal=3.0,
+              lateral_deviation=-0.5,
+              heading=-2.0,
           ),
       ),
       impl="jax",
@@ -323,6 +325,10 @@ class BridgeCrossing(go1_base.Go1Env):
         "energy": self._cost_energy(data.qvel[6:], data.actuator_force),
         "termination": self._cost_termination(done),
         "progress_to_goal": self._reward_progress_to_goal(data.qpos[0]),
+        "lateral_deviation": self._cost_lateral_deviation(data.qpos[1]),
+        "heading": self._cost_heading(
+            data.site_xmat[self._imu_site_id] @ jp.array([1.0, 0.0, 0.0])
+        ),
         "feet_air_time": self._reward_feet_air_time(
             info["feet_air_time"], first_contact
         ),
@@ -335,6 +341,14 @@ class BridgeCrossing(go1_base.Go1Env):
     # Linear gradient from spawn (x=-1.5) to Platform B entrance (x=4.0).
     # Gives a dense directional signal across the full terrain span.
     return jp.clip((x_pos + 1.5) / 5.5, 0.0, 1.0)
+
+  def _cost_lateral_deviation(self, y_pos: jax.Array) -> jax.Array:
+    return jp.square(y_pos)
+
+  def _cost_heading(self, forward_vec: jax.Array) -> jax.Array:
+    # Penalise the y-component of the robot's forward vector.
+    # Zero when facing +x, maximum (1.0) when facing sideways (±y).
+    return jp.square(forward_vec[1])
 
   def _cost_orientation(self, upvector: jax.Array) -> jax.Array:
     return jp.sum(jp.square(upvector[:2]))
