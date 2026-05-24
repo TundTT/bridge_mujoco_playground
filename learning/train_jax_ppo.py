@@ -118,6 +118,12 @@ _LOAD_CHECKPOINT_PATH = flags.DEFINE_string(
     "load_checkpoint_path", None, "Path to load checkpoint from"
 )
 _SUFFIX = flags.DEFINE_string("suffix", None, "Suffix for the experiment name")
+_WANDB_PROJECT = flags.DEFINE_string(
+    "wandb_project", "bridge_crossing", "WandB project name"
+)
+_WANDB_RUN_NAME = flags.DEFINE_string(
+    "wandb_run_name", None, "WandB display name for the run (defaults to suffix or exp_name)"
+)
 _PLAY_ONLY = flags.DEFINE_boolean(
     "play_only", False, "If true, only play with the model and do not train"
 )
@@ -355,7 +361,8 @@ def main(argv):
           "wandb is required for --use_wandb. "
           "Install via: pip install wandb"
       )
-    wandb.init(project="bridge_crossing", entity="Tund", name=exp_name)
+    wandb_run_name = _WANDB_RUN_NAME.value or _SUFFIX.value or exp_name
+    wandb.init(project=_WANDB_PROJECT.value, entity="Tund", name=wandb_run_name)
     wandb.config.update(env_cfg.to_dict())
     wandb.config.update({"env_name": _ENV_NAME.value})
 
