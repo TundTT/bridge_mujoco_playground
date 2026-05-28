@@ -181,3 +181,16 @@ If this is significantly faster than a run without the flag, IOMMU/P2P is the bo
 - **Do not kill a run mid-compile expecting the cache to be valid** — partial cache files will be ignored on next run (bad hash), forcing full recompile
 - **Do not use `nohup ... > log 2>&1` without `sys.stdout.reconfigure(line_buffering=True)`** — Python block-buffers stdout in non-interactive mode and you'll see no output until the process exits
 - **Do not add `--xla_gpu_enable_async_collectives=true` to XLA_FLAGS** — not a valid flag in JAX 0.6.2, causes immediate XLA abort with "Unknown flag" error
+- **Do not set `--xla_gpu_autotune_level=0`** — avoids exhaustive kernel search but picks poor default configs; causes `XlaRuntimeError: CANCELLED: Contracting dimension is too fragmented` on the first training epoch with 2 GPUs. The right fix is single GPU + normal autotune (or `--xla_gpu_shard_autotuning=false` for 2-GPU Blackwell)
+
+---
+
+## Single GPU vs two GPU compile behaviour (historical)
+
+With `CUDA_VISIBLE_DEVICES=0` (one GPU, 8192 envs):
+- JIT compile: ~60 seconds
+- Training: works cleanly
+
+With two GPUs (pmap, each GPU sees 4096 envs) and autotune disabled:
+- Causes `XlaRuntimeError: CANCELLED: Contracting dimension is too fragmented` on first epoch
+- Fix: use `--xla_gpu_shard_autotuning=false` (included in recommended env vars above), not autotune level 0

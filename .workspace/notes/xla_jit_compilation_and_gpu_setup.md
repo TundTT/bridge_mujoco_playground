@@ -20,24 +20,6 @@ This warning means XLA is doing exhaustive kernel search for that matrix shape.
 A few warnings at startup are normal. If they keep firing after the first minute,
 the run will likely hang for hours.
 
-### Single GPU compiles cleanly; two GPUs cause fragmentation
-With `CUDA_VISIBLE_DEVICES=0` (one GPU, 8192 envs):
-- JIT compile: ~60 seconds
-- Training: works
-
-With two GPUs (pmap across both):
-- Each GPU sees 4096 envs
-- Causes `XlaRuntimeError: CANCELLED: Contracting dimension is too fragmented`
-  on the first training epoch when autotuning is disabled
-
-**For all training runs use `CUDA_VISIBLE_DEVICES=0` until multi-GPU is explicitly
-tested and confirmed working.**
-
-### Disabling autotuning (`--xla_gpu_autotune_level=0`) is not a safe workaround
-Setting autotune level to 0 avoids the exhaustive search but picks poor default
-kernel configs. Results in the "Contracting dimension is too fragmented" error.
-The right fix is single GPU + normal autotune.
-
 ---
 
 ## Video Rendering
