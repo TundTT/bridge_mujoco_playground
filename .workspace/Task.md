@@ -40,4 +40,4 @@ A locomotion challenge where a legged robot (humanoid or quadruped) must travers
 
 ## Task Objective
 
-Control the robot from Platform A to Platform B without falling, as efficiently as possible.
+Control the robot from Platform A to Platform B without falling, as efficiently and quickly as possible.
