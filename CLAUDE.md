@@ -4,6 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Before beginning any work in this project, read @Task.md to understand the task context and objectives.
 
+For current training progress and curriculum results, see `.workspace/notes/research/progress.md`.
+
 ---
 
 # Development Environment
@@ -56,10 +58,51 @@ train-jax-ppo --env_name Go1JoystickFlatTerrain --impl warp  # MuJoCo Warp backe
 train-jax-ppo --env_name CartpoleBalance --num_timesteps 500000 --num_envs 512
 ```
 
+**Bridge crossing training:**
+```sh
+# Fresh run
+train-jax-ppo --env_name Go1BridgeCrossing \
+  --num_timesteps 300000000 \
+  --playground_config_overrides '{"bridge_half_width": 0.4}' \
+  --wandb_project bridge_crossing_1 \
+  --wandb_run_name my_run_name \
+  --use_wandb \
+  > /tmp/my_run.log 2>&1 &
+
+# Resume from checkpoint (curriculum)
+train-jax-ppo --env_name Go1BridgeCrossing \
+  --num_timesteps 200000000 \
+  --load_checkpoint_path logs/<run-folder>/checkpoints/<step> \
+  --playground_config_overrides '{"bridge_half_width": 0.25}' \
+  --wandb_project bridge_crossing_1 \
+  --wandb_run_name curriculum_0.5m \
+  --use_wandb \
+  > /tmp/my_run.log 2>&1 &
+```
+
+WandB project: `bridge_crossing_1` (https://wandb.ai/Tund/bridge_crossing_1)
+Logs & checkpoints: `bridge_mujoco_playground/logs/<run-folder>/`
+
 **Training (RSL-RL PPO):**
 ```sh
 train-rsl-ppo --env_name Go1JoystickFlatTerrain
 ```
+
+---
+
+## Setup & Installation
+
+```sh
+cd bridge_mujoco_playground
+uv venv --python 3.12
+source .venv/bin/activate
+uv pip install -U "jax[cuda12]" --index-url https://pypi.org/simple
+uv --no-config sync --all-extras
+```
+
+Verify: `python -c "import mujoco_playground; print('Success')"`
+
+Robot assets (mujoco_menagerie) are downloaded automatically on first `load()` call.
 
 ---
 
