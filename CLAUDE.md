@@ -17,7 +17,10 @@ For current training progress and curriculum results, see `.workspace/notes/rese
 
 ## Testing policy
 
-Unless explicitly told "we are on the workstation right now", assume we are on the Mac and do not attempt to run, test, or validate anything that requires the workstation environment (e.g. MuJoCo simulation, GPU training, Linux-only tools). Acknowledge when something cannot be verified locally rather than skipping or faking it.
+**At the start of every new conversation, before doing any work, ask the user which machine they are on: Mac or Linux workstation.** Do not assume. The answer changes what you can do:
+
+- **Mac**: Do not run, test, or validate anything that requires the workstation environment (MuJoCo simulation, GPU training, Linux-only tools). Acknowledge when something cannot be verified locally.
+- **Linux workstation**: Full access — training, simulation, GPU commands all available.
 
 ---
 
