@@ -17,10 +17,16 @@ For current training progress and curriculum results, see `.workspace/notes/rese
 
 ## Testing policy
 
-At the start of every new conversation, run `uname -s` to detect the platform before doing any work:
+At the start of every new conversation, run the following to detect the environment before doing any work:
 
-- **Darwin (Mac)**: Do not run, test, or validate anything that requires the workstation environment (MuJoCo simulation, GPU training, Linux-only tools). Acknowledge when something cannot be verified locally.
-- **Linux (workstation)**: Full access — training, simulation, GPU commands all available.
+```sh
+uname -s && nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null
+```
+
+Interpret the result:
+- **Darwin**: Mac — do not run anything requiring the workstation (MuJoCo simulation, GPU training, Linux-only tools). Acknowledge when something cannot be verified locally.
+- **Linux + two RTX 6000 GPUs listed**: Confirmed workstation — full access, all training and simulation commands available.
+- **Linux + anything else**: Unknown Linux machine — treat as Mac (no GPU training, no simulation) unless the user explicitly confirms otherwise.
 
 ---
 
