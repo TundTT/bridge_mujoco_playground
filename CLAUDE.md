@@ -17,10 +17,10 @@ For current training progress and curriculum results, see `.workspace/notes/rese
 
 ## Testing policy
 
-**At the start of every new conversation, before doing any work, ask the user which machine they are on: Mac or Linux workstation.** Do not assume. The answer changes what you can do:
+At the start of every new conversation, run `uname -s` to detect the platform before doing any work:
 
-- **Mac**: Do not run, test, or validate anything that requires the workstation environment (MuJoCo simulation, GPU training, Linux-only tools). Acknowledge when something cannot be verified locally.
-- **Linux workstation**: Full access — training, simulation, GPU commands all available.
+- **Darwin (Mac)**: Do not run, test, or validate anything that requires the workstation environment (MuJoCo simulation, GPU training, Linux-only tools). Acknowledge when something cannot be verified locally.
+- **Linux (workstation)**: Full access — training, simulation, GPU commands all available.
 
 ---
 
