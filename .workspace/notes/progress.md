@@ -49,12 +49,9 @@ Note: `bridge_half_width` in config = half the physical width (e.g. 0.15 → 0.3
 
 ## Blockers / Next Steps
 
-The curriculum has hit the perception wall. See `notes/research/potential_improvements.md` for the full list, but the highest-priority fix is:
+The curriculum has hit the perception wall. See `notes/research/potential_improvements.md` for the full list. 
 
-**Add to `state` observation in `bridge.py → _get_obs()`:**
-```python
-jp.array([data.qpos[1]])   # y-position — how far off bridge centre
-```
-And promote foot-on-bridge contact from `privileged_state` into `state`.
+## Next step.
 
-This requires a new foundation run (the observation size change makes old checkpoints incompatible).
+Discussion required to figure out perception/information problem
+

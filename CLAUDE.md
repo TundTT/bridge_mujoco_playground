@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Before beginning any work in this project, read @Task.md to understand the task context and objectives.
 
-For current training progress and curriculum results, see `.workspace/notes/research/progress.md`.
+For current project progress and curriculum training results, see `.workspace/notes/research/progress.md`.
 
 ---
 
