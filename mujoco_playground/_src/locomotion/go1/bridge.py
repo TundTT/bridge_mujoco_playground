@@ -28,6 +28,12 @@ from mujoco_playground._src.locomotion.go1 import base as go1_base
 from mujoco_playground._src.locomotion.go1 import go1_constants as consts
 
 
+_HM_X_MIN, _HM_X_MAX = -3.0, 7.0
+_HM_Y_MIN, _HM_Y_MAX = -1.0, 1.0
+_HM_CELL = 0.03
+_HM_PATCH = 13
+
+
 def default_config() -> config_dict.ConfigDict:
   return config_dict.create(
       ctrl_dt=0.02,
@@ -96,7 +102,46 @@ class BridgeCrossing(go1_base.Go1Env):
     self._mj_model.geom_size[bridge_id, 1] = self._config.bridge_half_width
     self._mjx_model = mjx.put_model(self._mj_model, impl=self._config.impl)
 
+    self._build_world_heightmap()
     self._post_init()
+
+  def _build_world_heightmap(self) -> None:
+    xs = np.arange(_HM_X_MIN, _HM_X_MAX + _HM_CELL / 2, _HM_CELL)
+    ys = np.arange(_HM_Y_MIN, _HM_Y_MAX + _HM_CELL / 2, _HM_CELL)
+    xx, yy = np.meshgrid(xs, ys, indexing='ij')
+    hw = self._config.bridge_half_width
+    on_platform_a = (xx >= -3.0) & (xx <= 0.0) & (np.abs(yy) <= 1.0)
+    on_bridge      = (xx >=  0.0) & (xx <= 4.0) & (np.abs(yy) <= hw)
+    on_platform_b  = (xx >=  4.0) & (xx <= 7.0) & (np.abs(yy) <= 1.0)
+    hm = (on_platform_a | on_bridge | on_platform_b).astype(np.float32)
+    self._world_heightmap = jp.array(hm)
+
+    half = (_HM_PATCH - 1) // 2
+    idx = np.arange(_HM_PATCH) - half
+    dx, dy = np.meshgrid(idx * _HM_CELL, idx * _HM_CELL, indexing='ij')
+    self._lh_dx = jp.array(dx)
+    self._lh_dy = jp.array(dy)
+
+  def _get_local_heightmap(self, data: mjx.Data) -> jax.Array:
+    robot_x = data.qpos[0]
+    robot_y = data.qpos[1]
+
+    forward = data.site_xmat[self._imu_site_id] @ jp.array([1.0, 0.0, 0.0])
+    fwd_norm = jp.linalg.norm(forward[:2]) + 1e-6
+    cos_yaw = forward[0] / fwd_norm
+    sin_yaw = forward[1] / fwd_norm
+
+    dx_world = cos_yaw * self._lh_dx - sin_yaw * self._lh_dy
+    dy_world = sin_yaw * self._lh_dx + cos_yaw * self._lh_dy
+
+    sx = robot_x + dx_world
+    sy = robot_y + dy_world
+
+    nx, ny = self._world_heightmap.shape
+    xi = jp.clip(jp.round((sx - _HM_X_MIN) / _HM_CELL).astype(jp.int32), 0, nx - 1)
+    yi = jp.clip(jp.round((sy - _HM_Y_MIN) / _HM_CELL).astype(jp.int32), 0, ny - 1)
+
+    return self._world_heightmap[xi, yi].ravel()
 
   def _post_init(self) -> None:
     self._init_q = jp.array(self._mj_model.keyframe("home").qpos)
@@ -281,6 +326,8 @@ class BridgeCrossing(go1_base.Go1Env):
     # Progress along the 7 m terrain span, normalised to roughly [-1, 1].
     x_progress = jp.clip(data.qpos[0] / 7.0, -1.0, 1.0)
 
+    local_heightmap = self._get_local_heightmap(data)  # (169,)
+
     state = jp.hstack([
         noisy_linvel,                             # 3
         noisy_gyro,                               # 3
@@ -289,7 +336,8 @@ class BridgeCrossing(go1_base.Go1Env):
         noisy_joint_vel,                          # 12
         info["last_act"],                         # 12
         jp.array([x_progress]),                   # 1
-    ])
+        local_heightmap,                          # 169
+    ])  # total: 215
 
     accelerometer = self.get_accelerometer(data)
     angvel = self.get_global_angvel(data)
