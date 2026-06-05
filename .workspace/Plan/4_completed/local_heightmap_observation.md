@@ -1,10 +1,10 @@
 # Plan: Local Heightmap Observation for Bridge Edge Perception
 
-> **Status: NOT STARTED**
+> **Status: COMPLETED — 2026-06-04**
 >
-> Addresses the perception wall hit at 0.3m bridge width. The policy currently has no signal
-> for where the bridge edges are — this adds a local terrain patch to the observation so the
-> robot can sense drift and self-correct before falling off.
+> Addresses the perception wall hit at 0.3m bridge width. Implementation in `bridge.py`
+> (commit a455765). All 3 test stages passed. Experiment 2 results: 91% at 0.3m (+42 pp),
+> 89% at 0.2m (+73 pp). 0.1m confirmed as a morphological wall, not a perception problem.
 
 ---
 
