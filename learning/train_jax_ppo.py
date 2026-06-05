@@ -513,6 +513,87 @@ def main(argv):
       rscope_handle.set_make_policy(make_policy)
       # rscope_handle.dump_rollout(params) # Disabled to prevent rendering slice crash
 
+  # Wrap policy_params_fn to also render a rollout video and log it to WandB at each eval.
+  if _USE_WANDB.value and wandb is not None and not _PLAY_ONLY.value and not _VISION.value:
+    _vid_env = registry.load(
+        _ENV_NAME.value,
+        config=registry.get_default_config(_ENV_NAME.value),
+        config_overrides=env_cfg_overrides,
+    )
+    _vid_wrapped = wrapper.wrap_for_brax_training(
+        _vid_env,
+        episode_length=ppo_params.episode_length,
+        action_repeat=ppo_params.get("action_repeat", 1),
+    )
+    _vid_init_state = jax.jit(_vid_wrapped.reset)(
+        jax.random.split(jax.random.PRNGKey(0), 1)
+    )
+    _empty_vid_data = _vid_init_state.data.__class__(
+        **{k: None for k in _vid_init_state.data.__annotations__}
+    )
+    _empty_vid_traj = _vid_init_state.__class__(
+        **{k: None for k in _vid_init_state.__annotations__}
+    )
+    _empty_vid_traj = _empty_vid_traj.replace(data=_empty_vid_data)
+    _vid_scene = mujoco.MjvOption()
+    _vid_scene.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = False
+    _vid_scene.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = False
+    _vid_scene.flags[mujoco.mjtVisFlag.mjVIS_CONTACTFORCE] = False
+    _vid_render_every = 2
+    _vid_fps = 1.0 / _vid_env.dt / _vid_render_every
+
+    _prev_ppfn = policy_params_fn
+
+    def policy_params_fn(current_step, make_policy, params):  # pylint: disable=function-redefined
+      _prev_ppfn(current_step, make_policy, params)
+      try:
+        jit_infer = jax.jit(make_policy(params, deterministic=True))
+        rng = jax.random.PRNGKey(current_step + 99)
+        rng, rk = jax.random.split(rng)
+        state = jax.jit(_vid_wrapped.reset)(jax.random.split(rk, 1))
+
+        def _vid_step(carry, _):
+          s, rng = carry
+          rng, ak = jax.random.split(rng)
+          act = jax.vmap(jit_infer)(s.obs, jax.random.split(ak, 1))[0]
+          s = _vid_wrapped.step(s, act)
+          td = _empty_vid_traj.tree_replace({
+              "data.qpos": s.data.qpos,
+              "data.qvel": s.data.qvel,
+              "data.time": s.data.time,
+              "data.ctrl": s.data.ctrl,
+              "data.mocap_pos": s.data.mocap_pos,
+              "data.mocap_quat": s.data.mocap_quat,
+              "data.xfrc_applied": s.data.xfrc_applied,
+          })
+          return (s, rng), td
+
+        _, traj = jax.jit(
+            lambda s, r: jax.lax.scan(
+                _vid_step, (s, r), None, length=ppo_params.episode_length
+            )
+        )(state, rng)
+        traj = jax.tree.map(lambda x: jp.moveaxis(x, 0, 1), traj)
+        traj0 = jax.tree.map(lambda x: x[0], traj)
+        trajectory = [
+            jax.tree.map(lambda x, j=j: x[j], traj0)
+            for j in range(ppo_params.episode_length)
+        ]
+        frames = _vid_env.render(
+            trajectory[::_vid_render_every],
+            height=480, width=640,
+            scene_option=_vid_scene,
+        )
+        vid_path = logdir / f"rollout_step{current_step:012d}.mp4"
+        media.write_video(str(vid_path), frames, fps=_vid_fps)
+        wandb.log(
+            {"rollout_video": wandb.Video(str(vid_path), fps=_vid_fps, format="mp4")},
+            step=current_step,
+        )
+        print(f"  [video] logged step {current_step}: {vid_path.name}")
+      except Exception as e:  # pylint: disable=broad-except
+        print(f"  [video] WARNING: render failed at step {current_step}: {e}")
+
   # Train or load the model
   make_inference_fn, params, _ = train_fn(  # pylint: disable=no-value-for-parameter
       environment=env,
