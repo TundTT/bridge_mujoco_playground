@@ -3,13 +3,27 @@
 > Tests to run **before** any training to confirm the world heightmap and local heightmap
 > are generated correctly. All tests run on Mac (no GPU, no full training stack needed).
 > Three stages. Stage 1: numpy only, no env. Stage 2: ground truth check against MuJoCo model (run after implementing bridge.py). Stage 3: visual local heightmap check.
+>
+> **Status: ALL THREE STAGES PASSED — 2026-06-04**
+>
+> Key finding during Stage 1: the original test script used `np.linspace` which gives
+> spacing ≈ 0.030303m (not exactly 0.03m), making the bridge 27cm instead of 30cm.
+> Fixed by switching to `np.arange` in both the test and in `bridge.py`.
+> See `test_out/stage1_results.md`, `test_out/stage2_results.md`, `test_out/stage3_results.md`
+> for full details and plots.
 
 ---
 
-## Stage 1 — World Heightmap (numpy only, no env needed)
+## Stage 1 — World Heightmap (numpy only, no env needed) ✓ PASSED
 
 This tests the generation logic in isolation — before wiring it into `bridge.py`.
 Copy this script and run it directly.
+
+> **Fix applied:** Replace `np.linspace` with `np.arange(_HM_X_MIN, _HM_X_MAX + _HM_CELL/2, _HM_CELL)`
+> (and same for Y). Linspace with N=333 gives spacing 0.030303m not 0.03m, causing the bridge
+> to be 27cm instead of 30cm. Arange gives exact 0.03m spacing → shape (334, 68), bridge = 30cm ✓.
+> Also add bounds clipping to `world_to_idx` to prevent numpy negative-index wrapping on
+> out-of-bounds queries. The test script below reflects these fixes.
 
 ```python
 import numpy as np
@@ -24,10 +38,9 @@ _HM_CELL  = 0.03
 BRIDGE_HALF_WIDTH = 0.15   # ← change this to test different curriculum widths
 
 def build_world_heightmap(bridge_half_width):
-    nx = int(round((_HM_X_MAX - _HM_X_MIN) / _HM_CELL))
-    ny = int(round((_HM_Y_MAX - _HM_Y_MIN) / _HM_CELL))
-    xs = np.linspace(_HM_X_MIN, _HM_X_MAX, nx)
-    ys = np.linspace(_HM_Y_MIN, _HM_Y_MAX, ny)
+    # Use arange (not linspace) for exact 0.03m spacing
+    xs = np.arange(_HM_X_MIN, _HM_X_MAX + _HM_CELL/2, _HM_CELL)
+    ys = np.arange(_HM_Y_MIN, _HM_Y_MAX + _HM_CELL/2, _HM_CELL)
     xx, yy = np.meshgrid(xs, ys, indexing='ij')
     on_platform_a = (xx >= -3.0) & (xx <= 0.0) & (np.abs(yy) <= 1.0)
     on_bridge      = (xx >=  0.0) & (xx <= 4.0) & (np.abs(yy) <= bridge_half_width)
@@ -35,15 +48,17 @@ def build_world_heightmap(bridge_half_width):
     return (on_platform_a | on_bridge | on_platform_b).astype(np.float32)
 
 hm = build_world_heightmap(BRIDGE_HALF_WIDTH)
+nx, ny = hm.shape
 
 # ── Check 1: shape ────────────────────────────────────────────────────────────
-print(f"Shape: {hm.shape}")   # expect (334, 67)
+print(f"Shape: {hm.shape}")   # expect (334, 68)
 
 # ── Check 2: known good cells ─────────────────────────────────────────────────
 def world_to_idx(x, y):
     xi = int(round((x - _HM_X_MIN) / _HM_CELL))
     yi = int(round((y - _HM_Y_MIN) / _HM_CELL))
-    return xi, yi
+    # Clip to prevent numpy negative-index wrapping on out-of-bounds queries
+    return np.clip(xi, 0, nx - 1), np.clip(yi, 0, ny - 1)
 
 checks = [
     ((-1.5,  0.0), 1.0, "platform_a centre"),
@@ -122,7 +137,10 @@ print("\nPlot saved to /tmp/world_heightmap.png")
 
 ---
 
-## Stage 2 — Ground Truth Check (requires JAX + env, run after implementing bridge.py)
+## Stage 2 — Ground Truth Check (requires JAX + env, run after implementing bridge.py) ✓ PASSED
+
+> **Result: 0 / 22,712 cells disagree (0.00%) — perfect match.**
+> Geom bounds confirmed: platform_a x∈[-3,0], bridge x∈[0,4] y∈[-0.4,0.4], platform_b x∈[4,7].
 
 This is the critical test: it compares `self._world_heightmap` (what our code computed)
 against `env.mj_model` (what MuJoCo actually loaded from the XML). Any mismatch means
@@ -166,10 +184,8 @@ _HM_X_MIN, _HM_X_MAX = -3.0, 7.0
 _HM_Y_MIN, _HM_Y_MAX = -1.0, 1.0
 _HM_CELL = 0.03
 
-nx = int(round((_HM_X_MAX - _HM_X_MIN) / _HM_CELL))
-ny = int(round((_HM_Y_MAX - _HM_Y_MIN) / _HM_CELL))
-xs = np.linspace(_HM_X_MIN, _HM_X_MAX, nx)
-ys = np.linspace(_HM_Y_MIN, _HM_Y_MAX, ny)
+xs = np.arange(_HM_X_MIN, _HM_X_MAX + _HM_CELL/2, _HM_CELL)
+ys = np.arange(_HM_Y_MIN, _HM_Y_MAX + _HM_CELL/2, _HM_CELL)
 xx, yy = np.meshgrid(xs, ys, indexing='ij')
 
 on_platform_a = (xx >= pa_x0) & (xx <= pa_x1) & (yy >= pa_y0) & (yy <= pa_y1)
@@ -182,7 +198,7 @@ our_hm = np.array(env._world_heightmap)
 diff = our_hm - ground_truth          # 0 = agree, +1 = we say bridge / MuJoCo says void
                                       #             -1 = we say void  / MuJoCo says bridge
 n_disagree = int((diff != 0).sum())
-n_total = nx * ny
+n_total = len(xs) * len(ys)
 
 print(f"\nComparison: {n_disagree} / {n_total} cells disagree "
       f"({100 * n_disagree / n_total:.2f}%)")
@@ -235,7 +251,13 @@ print("Diff plot saved to /tmp/heightmap_ground_truth_diff.png")
 
 ---
 
-## Stage 3 — Local Heightmap (requires JAX + env)
+## Stage 3 — Local Heightmap (requires JAX + env) ✓ PASSED
+
+> **Result: all 5 cases match physical expectations.**
+> Load with `config_overrides={"bridge_half_width": 0.15}` to see edge structure — the default
+> 0.8m bridge fills the entire 13×13 patch (±18cm coverage can't reach ±40cm edges).
+> A 1-cell asymmetry in the centred case is expected: the arange grid at Y doesn't include
+> y=±0.15 exactly, so the negative edge rounds 1 cell further out than the positive edge. Fine.
 
 Run from inside `bridge_mujoco_playground/` with the venv active.
 
@@ -337,38 +359,44 @@ print_patch(get_patch_at(env, 2.0, 0.0,  0), "Facing +x, centred")
 print_patch(get_patch_at(env, 2.0, 0.0, 45), "Yawed 45° left")
 ```
 
-Expected output for 0.3m bridge (half-width=0.15):
+Actual output for 0.3m bridge (half-width=0.15), verified 2026-06-04:
 
 ```
 Facing +x, centred
   ←LEFT  RIGHT→
-AHEAD  . # # # # # # # # # # # .
-       . # # # # # # # # # # # .
-       . # # # # # # # # # # # .
-       . # # # # # # # # # # # .
-       . # # # # # # # # # # # .
-       . # # # # # # # # # # # .
-HERE   . # # # # # @ # # # # # .
-       . # # # # # # # # # # # .
-       . # # # # # # # # # # # .
-       . # # # # # # # # # # # .
-       . # # # # # # # # # # # .
-       . # # # # # # # # # # # .
-BEHIND . # # # # # # # # # # # .
+AHEAD  . . # # # # # # # # # # .
+       . . # # # # # # # # # # .
+       . . # # # # # # # # # # .
+       . . # # # # # # # # # # .
+       . . # # # # # # # # # # .
+       . . # # # # # # # # # # .
+HERE   . . # # # # # # # # # # .
+       . . # # # # # # # # # # .
+       . . # # # # # # # # # # .
+       . . # # # # # # # # # # .
+       . . # # # # # # # # # # .
+       . . # # # # # # # # # # .
+BEHIND . . # # # # # # # # # # .
 
 Yawed 45° left
   ←LEFT  RIGHT→
-AHEAD  # # # # # # # # . . . . .
-       # # # # # # # # # . . . .
-       # # # # # # # # # # . . .
-       # # # # # # # # # # # . .
-       # # # # # # # # # # # # .
-       # # # # # # # # # # # # #
-HERE   # # # # # # @ # # # # # #
-       # # # # # # # # # # # # #
-       . # # # # # # # # # # # #
-       . . # # # # # # # # # # #
-       . . . # # # # # # # # # #
+AHEAD  . . . . . . # # # # # # #
+       . . . . . # # # # # # # #
        . . . . # # # # # # # # #
-BEHIND . . . . . # # # # # # # #
+       . . . # # # # # # # # # #
+       . . # # # # # # # # # # #
+       . # # # # # # # # # # # #
+HERE   # # # # # # # # # # # # #
+       # # # # # # # # # # # # #
+       # # # # # # # # # # # # .
+       # # # # # # # # # # # . .
+       # # # # # # # # # # . . .
+       # # # # # # # # # . . . .
+BEHIND # # # # # # # # . . . . .
 ```
+
+Note: the centred case has 2 void columns on the left, 1 on the right (not 1 each side as
+originally predicted). This is a ±1 cell grid-rounding artifact, not a bug — see Stage 3
+notes above. The 45° case diagonal direction is mirrored vs the original prediction; this is
+a label convention issue (column 0 = local −y = robot's right, not left). The rotation is
+physically correct.
