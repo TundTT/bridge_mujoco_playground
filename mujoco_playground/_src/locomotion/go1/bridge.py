@@ -33,6 +33,9 @@ _HM_Y_MIN, _HM_Y_MAX = -1.0, 1.0
 _HM_CELL = 0.03
 _HM_PATCH = 13
 
+# linvel(3)+gyro(3)+gravity(3)+joint_angles(12)+joint_vel(12)+last_act(12)+x_progress(1)
+_PROPRIO_SIZE = 46
+
 
 def default_config() -> config_dict.ConfigDict:
   return config_dict.create(
@@ -43,7 +46,7 @@ def default_config() -> config_dict.ConfigDict:
       Kd=0.5,
       action_repeat=1,
       action_scale=0.3,
-      history_len=1,
+      history_len=3,
       soft_joint_pos_limit_factor=0.95,
       # Curriculum: bridge y half-extent in metres (0.4 = 0.8 m wide).
       bridge_half_width=0.4,
@@ -72,10 +75,12 @@ def default_config() -> config_dict.ConfigDict:
               energy=-0.001,
               termination=-1.0,
               success=5000.0,
-              feet_air_time=0.1,
+              feet_air_time=0.0,
               progress_to_goal=3.0,
               lateral_deviation=-3.0,
               heading=-2.0,
+              foot_off_bridge=-5.0,
+              foot_lateral_deviation=-1.0,
           ),
       ),
       impl="jax",
@@ -213,6 +218,7 @@ class BridgeCrossing(go1_base.Go1Env):
         "feet_air_time": jp.zeros(4),
         "last_contact": jp.zeros(4, dtype=bool),
         "swing_peak": jp.zeros(4),
+        "obs_history": jp.zeros((self._config.history_len - 1, _PROPRIO_SIZE)),
     }
 
     metrics = {}
@@ -241,12 +247,17 @@ class BridgeCrossing(go1_base.Go1Env):
     state.info["swing_peak"] = jp.maximum(state.info["swing_peak"], p_fz)
 
     obs = self._get_obs(data, state.info)
+    if self._config.history_len > 1:
+      current_proprio = obs["state"][:_PROPRIO_SIZE]
+      state.info["obs_history"] = jp.concatenate(
+          [state.info["obs_history"][1:], current_proprio[None]], axis=0
+      )
     failure = self._get_failure(data)
     success = self._get_success(data)
     done = failure | success
 
     rewards = self._get_reward(
-        data, action, state.info, failure, success, first_contact, contact
+        data, action, state.info, failure, success, first_contact
     )
     rewards = {
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
@@ -328,7 +339,7 @@ class BridgeCrossing(go1_base.Go1Env):
 
     local_heightmap = self._get_local_heightmap(data)  # (169,)
 
-    state = jp.hstack([
+    proprio = jp.hstack([
         noisy_linvel,                             # 3
         noisy_gyro,                               # 3
         noisy_gravity,                            # 3
@@ -336,8 +347,16 @@ class BridgeCrossing(go1_base.Go1Env):
         noisy_joint_vel,                          # 12
         info["last_act"],                         # 12
         jp.array([x_progress]),                   # 1
-        local_heightmap,                          # 169
-    ])  # total: 215
+    ])  # total: 46 = _PROPRIO_SIZE
+
+    if self._config.history_len > 1:
+      state = jp.hstack([
+          proprio,                                # 46
+          local_heightmap,                        # 169
+          info["obs_history"].ravel(),            # (history_len-1) * 46
+      ])
+    else:
+      state = jp.hstack([proprio, local_heightmap])  # 215
 
     accelerometer = self.get_accelerometer(data)
     angvel = self.get_global_angvel(data)
@@ -369,7 +388,6 @@ class BridgeCrossing(go1_base.Go1Env):
       failure: jax.Array,
       success: jax.Array,
       first_contact: jax.Array,
-      contact: jax.Array,
   ) -> dict[str, jax.Array]:
     return {
         "forward_vel": self._reward_forward_vel(self.get_local_linvel(data)),
@@ -390,6 +408,8 @@ class BridgeCrossing(go1_base.Go1Env):
         "feet_air_time": self._reward_feet_air_time(
             info["feet_air_time"], first_contact
         ),
+        "foot_off_bridge": self._cost_foot_off_bridge(data, first_contact),
+        "foot_lateral_deviation": self._cost_foot_lateral_deviation(data),
     }
 
   def _reward_forward_vel(self, local_vel: jax.Array) -> jax.Array:
@@ -438,3 +458,27 @@ class BridgeCrossing(go1_base.Go1Env):
       self, air_time: jax.Array, first_contact: jax.Array
   ) -> jax.Array:
     return jp.sum((air_time - 0.1) * first_contact)
+
+  def _cost_foot_off_bridge(
+      self, data: mjx.Data, first_contact: jax.Array
+  ) -> jax.Array:
+    foot_xy = data.site_xpos[self._feet_site_id, :2]  # (4, 2)
+    nx, ny = self._world_heightmap.shape
+    xi = jp.clip(
+        jp.round((foot_xy[:, 0] - _HM_X_MIN) / _HM_CELL).astype(jp.int32),
+        0, nx - 1,
+    )
+    yi = jp.clip(
+        jp.round((foot_xy[:, 1] - _HM_Y_MIN) / _HM_CELL).astype(jp.int32),
+        0, ny - 1,
+    )
+    on_surface = self._world_heightmap[xi, yi]  # (4,) binary
+    return jp.sum(first_contact * (1.0 - on_surface))
+
+  def _cost_foot_lateral_deviation(self, data: mjx.Data) -> jax.Array:
+    foot_y = data.site_xpos[self._feet_site_id, 1]  # (4,) world-frame y
+    # Only penalise feet that overhang the bridge edge — zero cost for a normal
+    # wide stance on a wide bridge, bites progressively as the bridge narrows.
+    threshold = jp.maximum(self._config.bridge_half_width - 0.02, 0.0)
+    excess = jp.maximum(0.0, jp.abs(foot_y) - threshold)
+    return jp.sum(jp.square(excess))
