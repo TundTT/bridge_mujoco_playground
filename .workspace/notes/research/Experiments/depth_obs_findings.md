@@ -1,81 +1,27 @@
-# Findings: Local Heightmap (Depth) Observation
+# Narrow Bridge Locomotion — Depth Observation Findings
 
-> Experiment completed 2026-06-04. WandB project: `bridge_crossing_with_depth`.
-> Baseline comparison: `bridge_crossing_1` (same curriculum, no depth obs).
-
----
-
-## What We Added
-
-A **13×13 local terrain patch** sampled from a pre-computed world heightmap and appended to the policy's `state` observation vector. The patch is always in robot-local frame — row 0 = ahead, column 0 = robot's right — so the policy sees the same spatial layout regardless of heading.
-
-- **Grid resolution:** 3 cm/cell
-- **Patch coverage:** ±18 cm from robot centre (5.3 cm past the outer feet)
-- **Encoding:** binary — 1.0 = solid surface, 0.0 = void/fall-off
-- **Observation size:** 46 → 215 floats (169 new)
-- **Cost:** world heightmap built once at init (87 KB); patch sampled via array indexing each step — JIT-compiled, no rendering overhead
+> **Date:** 2026-06-04
+> **Project:** Unitree Go1 quadruped traversing a narrow bridge of configurable width
+> **Goal:** Train a legged robot to cross increasingly narrow bridges using curriculum RL,
+> ultimately reaching widths below the robot's own stance width
 
 ---
 
-## Results
+## Scene & Training Setup
 
-| Bridge width | No depth (success) | With depth (success) | Change |
-|---|---|---|---|
-| 0.8m | 77% | 96% | +19 pp |
-| 0.6m | 65% | 100% | +35 pp |
-| 0.5m | 65% | 100% | +35 pp |
-| 0.4m | 68% | 98% | +30 pp |
-| 0.3m | **49%** | **91%** | **+42 pp** |
-| 0.2m | **16%** | **89%** | **+73 pp** |
-| 0.1m | 0% | 0% | 0 pp |
+**Scene geometry:**
+- Platform A: 3 m × 2 m (spawn area, x ∈ [−3, 0])
+- Bridge: 4 m long, width configurable via `bridge_half_width` (x ∈ [0, 4])
+- Platform B: 3 m × 2 m (goal, x ∈ [4, 7]) — success when robot reaches x ≥ 5.5 m
 
-The biggest gains are exactly where we expected: the widths where the robot's feet are close to or past the bridge edge. At 0.2m (bridge narrower than the robot's stance) the improvement is +73 percentage points.
-
----
-
-## What the Depth Obs Actually Enables
-
-**Before (no depth):** The policy had no y-position signal and no terrain geometry. It learned a gait prior that stayed centred on average — which is fine on a wide bridge but degrades to a coin-flip as the bridge narrows, because the policy cannot detect drift and has no reason to correct laterally.
-
-**After (with depth):** The 13×13 patch directly encodes "edge is N cells to the left / M cells to the right." The asymmetry in the patch tells the policy which way it's drifting before it falls off. The policy learned to use this signal to actively re-centre — visible in the WandB videos as a clear lateral correction reflex that wasn't present before.
-
----
-
-## What We Learned
-
-### 1. The old ceiling was a perception problem, not a capacity problem
-
-The no-depth curriculum hit a hard wall at 0.3m (49% success) even with 436M steps and multiple extensions. Adding the heightmap obs with only 200M steps per stage produced 91% at 0.3m. The robot was capable of crossing; it just couldn't tell where the edge was.
-
-### 2. The depth obs pays off most below 0.4m
-
-At 0.8m the gain is modest (+19 pp) because the robot could stay centred without explicit edge sensing — the bridge is wide enough that random drift rarely causes a fall. Below 0.4m the gain grows sharply, peaking at 0.2m (+73 pp) where the bridge is narrower than the robot's own stance and perfect centring is required.
-
-### 3. 0.1m is a physics wall, not a perception wall
-
-With depth obs the robot can now see exactly where the edges are. It still fails 100% at 0.1m. The reason: the Go1's stance width (~28 cm hip-to-hip) is wider than the 10 cm bridge. The robot cannot place four feet on the surface simultaneously regardless of what it perceives. This confirms the 0.1m failure is a morphology constraint, not an information problem. More training steps, better obs, or reward shaping will not fix it.
-
-### 4. The heightmap must use np.arange, not np.linspace
-
-During Stage 1 testing we found that using `np.linspace(min, max, n)` gives a grid spacing of `(max-min)/(n-1)` ≈ 0.030303 instead of exactly 0.03 m. This causes the bridge width to be systematically under-represented by ~1 cell (~10% narrower than configured). The fix is `np.arange(min, max + cell/2, cell)` which gives exact 0.03 m spacing. This is now in `bridge.py`.
-
-### 5. Convergence is faster with depth
-
-Every stage with depth obs converged to its final performance in 200M steps. The equivalent no-depth stages often required extensions (up to 436M total for 0.3m). The depth signal appears to simplify the credit assignment problem — the policy gets immediate feedback on drift direction rather than having to infer it from falling.
-
-### 6. Videos reveal the qualitative change
-
-The per-eval WandB videos (logged via `policy_params_fn` at each checkpoint) clearly show:
-- At 0.8m: robot walks normally, little lateral correction needed
-- At 0.3m–0.2m: robot makes visible lateral micro-corrections mid-bridge, using the edge signal to re-centre after perturbations
-- At 0.1m: robot attempts to walk but feet land off-bridge immediately — the patch shows the robot correctly perceives the edge, it just has nowhere to step
+**Training setup:**
+- Algorithm: PPO (Brax/JAX), 4096 parallel environments, dual RTX PRO 6000 GPUs
+- Policy: MLP (512 → 256 → 128), actor reads `state`, critic reads `privileged_state`
+- Control: PD joint position targets at 50 Hz, 12 DoF
 
 ---
 
 ## Reward Function
-
-All runs used the same reward configuration (no changes from baseline curriculum).
-Each term is computed per-step, summed, multiplied by `dt=0.02`, then clipped to `[-10, 10000]`.
 
 | Term | Scale | Raw function | Purpose |
 |---|---|---|---|
@@ -94,14 +40,150 @@ Each term is computed per-step, summed, multiplied by `dt=0.02`, then clipped to
 
 **Failure condition:** `qpos[2] < 0.2m` (root below 0.2m) OR upvector_z < 0 (robot flipped).
 **Success condition:** `qpos[0] ≥ 5.5m` (halfway into Platform B).
+Each term is computed per-step, summed, multiplied by `dt=0.02`, then clipped to `[-10, 10000]`.
 
-The `lateral_deviation` and `heading` terms were the critical ones — they gave the robot a weak centering incentive even without depth obs. With depth obs, these terms combined with the explicit edge signal to produce the strong correction reflex.
+---
+
+## Experiment 1 — Baseline (No Depth)
+
+**Observation (46 floats):** linear velocity, gyro, gravity vector, joint angles/velocities,
+last action, x-progress. No y-position, no edge signal.
+
+**Curriculum:** 0.8 m → 0.5 m → 0.4 m → 0.3 m → 0.2 m → 0.1 m
+
+| Stage | Width | Steps | Success | Fail |
+|---|---|---|---|---|
+| Foundation | 0.8 m | 300 M | 77% | 23% |
+| Stage 2 | 0.5 m | 236 M | 65% | 35% |
+| Stage 3 | 0.4 m | 236 M | 68% | 32% |
+| Stage 4 | 0.3 m | 436 M | 49% | 51% |
+| Stage 5 | 0.2 m | 236 M | 16% | 84% |
+| Stage 6 | 0.1 m | 500 M | 0% | ~100% |
+
+**Ceiling: 0.3 m at ~50% success.** Extended training (436 M steps) produced no improvement.
+Without a y-position or edge-proximity signal, the policy learns a gait prior that stays centred
+*on average* — fine on a wide bridge, but insufficient as width narrows because the policy cannot
+detect drift and self-correct.
+
+---
+
+## Experiment 2 — With Local Heightmap (Depth Obs)
+
+### What We Added
+
+A **13×13 local terrain patch** sampled from a pre-computed binary heightmap of the scene
+(1.0 = solid surface, 0.0 = void), appended to the policy observation each step.
+
+- **Resolution:** 3 cm/cell
+- **Coverage:** ±18 cm from robot centre — reaches 5.3 cm past the outer feet
+- **Frame:** robot-local, rotated by yaw — the policy always sees ahead/left/right edges
+  regardless of heading in the world; row 0 = ahead, column 0 = robot's right
+- **Encoding:** binary — 1.0 = solid surface, 0.0 = void/fall-off
+- **Cost:** world heightmap built once at init (87 KB); patch sampled via array indexing each
+  step — JIT-compiled, no rendering overhead
+- **Observation size:** 46 → 215 floats (+169)
+
+### Results
+
+**Curriculum:** 0.8 m → 0.7 m → 0.6 m → 0.5 m → 0.4 m → 0.3 m → 0.2 m → 0.1 m
+
+| Stage | Width | Steps | Success | Fail | vs Baseline |
+|---|---|---|---|---|---|
+| depth_0.8m | 0.8 m | 300 M | 96% | 4% | +19 pp |
+| depth_0.7m | 0.7 m | 200 M | 100% | 0% | *(new)* |
+| depth_0.6m | 0.6 m | 200 M | 100% | 0% | +35 pp |
+| depth_0.5m | 0.5 m | 200 M | 100% | 0% | +35 pp |
+| depth_0.4m | 0.4 m | 200 M | 98% | 2% | +30 pp |
+| **depth_0.3m** | **0.3 m** | **200 M** | **91%** | **9%** | **+42 pp** |
+| **depth_0.2m** | **0.2 m** | **200 M** | **89%** | **11%** | **+73 pp** |
+| depth_0.1m | 0.1 m | 300 M | 0% | 100% | 0 pp |
+
+### What the Depth Obs Actually Enables
+
+**Before:** The policy had no y-position signal and no terrain geometry. It learned a gait prior
+that stayed centred on average — fine on a wide bridge, a coin-flip as the bridge narrows.
+
+**After:** The 13×13 patch directly encodes "edge is N cells to the left / M cells to the right."
+The asymmetry in the patch tells the policy which way it's drifting before it falls off. The policy
+learned to use this signal to actively re-centre — visible in the WandB videos as a clear lateral
+correction reflex that wasn't present before.
+
+---
+
+## Key Findings
+
+### 1. The 0.3 m ceiling was a perception problem, not a capacity problem
+
+The no-depth curriculum hit a hard wall at 0.3 m (49% success) even with 436 M steps. Adding the
+heightmap with only 200 M steps per stage produced 91% at 0.3 m. The robot was capable of crossing
+all along — it just couldn't sense where the edge was.
+
+### 2. The gain scales inversely with bridge width
+
+At 0.8 m the depth obs adds +19 pp. At 0.2 m it adds +73 pp. On a wide bridge, random drift is
+tolerated; on a narrow one, every centimetre of drift matters and explicit edge sensing becomes
+critical.
+
+### 3. 0.2 m is near-solved (89%) — a 73 percentage point improvement
+
+The Go1's hip-to-hip stance is ~28 cm. A 0.2 m bridge is narrower than the robot's own body. The
+robot now crosses at 89% by actively centring its body mass between its widely-spread feet —
+previously considered physically implausible without specialised perception.
+
+### 4. 0.1 m is a physics wall, not a perception wall
+
+With depth obs the robot can now see exactly where the edges are. It still fails 100% at 0.1 m.
+The Go1's stance width (~28 cm) is wider than the 10 cm bridge — it cannot place four feet on the
+surface simultaneously regardless of perception. The failure mode is "feet land off-bridge
+instantly," not "robot drifts and falls." More training, better obs, or reward shaping will not
+fix it.
+
+### 5. Convergence is faster with depth
+
+Every depth stage converged in 200 M steps. No extensions needed. The baseline required up to
+436 M steps at 0.3 m with no improvement. The edge signal simplifies credit assignment — the
+policy gets immediate directional feedback on drift rather than having to infer it from falling.
+
+### 6. The heightmap must use np.arange, not np.linspace
+
+`np.linspace(min, max, n)` gives grid spacing of `(max-min)/(n-1)` ≈ 0.030303 instead of exactly
+0.03 m, causing the bridge width to be systematically under-represented by ~1 cell (~10% narrower
+than configured). Fix: `np.arange(min, max + cell/2, cell)` for exact 0.03 m spacing. Now in
+`bridge.py`.
+
+---
+
+## What the Robot Learned to Do
+
+The WandB videos (logged at each eval checkpoint via `policy_params_fn`) show a qualitative change:
+
+- **0.8 m–0.5 m:** Normal quadruped walk, minimal lateral correction needed
+- **0.3 m–0.2 m:** Visible lateral micro-corrections mid-bridge — the robot detects which side
+  it's drifting toward and actively re-centres, recovering from perturbations that would have
+  caused falls without depth obs
+- **0.1 m:** Robot attempts to walk but feet land off-bridge immediately — the patch shows the
+  robot correctly perceives the edge, it just has nowhere to step
+
+---
+
+## Problems Solved Along the Way
+
+| Problem | Fix |
+|---|---|
+| Robot avoided crossing (success scale too small) | Raised to 5000 (>expected future return) |
+| Penalty signals had no effect (reward clipped at 0) | Lower bound changed to −10 |
+| NaN propagation from reward terms | Wrapped in `jp.nan_to_num` |
+| `lateral_deviation` scale too aggressive | Tuned to −3.0 from −4.0 |
+| Heightmap 10% too narrow (`np.linspace` spacing error) | Switched to `np.arange` for exact 0.03 m grid |
+| No videos during training | Added `policy_params_fn` to render + upload at each eval |
 
 ---
 
 ## Open Questions
 
-- **Can 0.2m reach ~100%?** It ended at 89% with 200M steps. More training or a lower `lateral_deviation` penalty threshold might push it to 95%+.
-- **Can a humanoid (H1/G1) cross 0.1m?** Humanoids have a narrower effective stance and different foot geometry. The heightmap obs transfers directly — same code, different robot.
-- **Does the heightmap help with dynamic perturbations?** We only tested the static bridge. Under domain randomisation (wind, slippery surface) the lateral correction reflex may be even more important.
-- **Is binary encoding sufficient?** We used 1.0/0.0. Continuous height values (e.g. modelling the drop below the bridge) might give richer signals but add complexity.
+- **Can 0.2 m reach ~100%?** 89% with 200 M steps — more training or a tighter lateral penalty may close the gap
+- **Can a humanoid cross 0.1 m?** H1/G1 have a narrower stance. The heightmap obs code transfers directly — same implementation, different robot
+- **Continuous curriculum?** Rather than staged restarts, anneal `bridge_half_width` within a single run as success rate rises
+- **Observation history?** `history_len=1` currently — 3–5 step history would let the policy detect drift *trends*, not just instantaneous state
+- **Domain randomisation?** The lateral correction reflex likely becomes even more important under perturbations (wind, surface friction variation)
+- **Is binary encoding sufficient?** Continuous height values (e.g. modelling the drop below the bridge) might give richer signals but add complexity
