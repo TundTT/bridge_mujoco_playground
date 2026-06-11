@@ -71,9 +71,8 @@ def default_config() -> config_dict.ConfigDict:
       foothold_prior_noise_std=0.0,
       reward_config=config_dict.create(
           scales=config_dict.create(
-              # forward_vel removed: frontier_delta subsumes directional signal.
               orientation=-5.0,
-              alive=0.1,
+              alive=0.0,
               torques=-0.0002,
               action_rate=-0.01,
               energy=-0.001,
@@ -81,9 +80,9 @@ def default_config() -> config_dict.ConfigDict:
               success=5000.0,
               feet_air_time=0.0,
               # Frontier delta: rewards metres of NEW ground covered per step.
-              # Oscillation-proof (backward=0), loiter-proof (standing=0),
-              # constant gradient across full bridge (no log decay).
-              frontier_delta=2.0,
+              # Scale must dominate alive+foothold standing income so crossing
+              # beats loitering: 7m * 50 = 350 >> foothold(20) + alive(0).
+              frontier_delta=50.0,
               lateral_deviation=-3.0,
               heading=-2.0,
               foot_off_bridge=-5.0,
