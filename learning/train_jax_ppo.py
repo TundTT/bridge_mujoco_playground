@@ -709,7 +709,11 @@ def main(argv):
     media.write_video(video_path, frames, fps=fps)
     print(f"Rollout video saved as '{video_path}'.")
     if _USE_WANDB.value and wandb is not None:
-      wandb.log({f"rollout_video_{i}": wandb.Video(str(video_path), fps=fps, format="mp4")})
+      frames_np = np.asarray(frames)  # (T, H, W, 3) uint8
+      h, w = frames_np.shape[1], frames_np.shape[2]
+      frames_np = frames_np[:, : h - h % 2, : w - w % 2, :]  # even dims
+      frames_np = np.transpose(frames_np, (0, 3, 1, 2))  # (T, 3, H, W)
+      wandb.log({f"rollout_video_{i}": wandb.Video(frames_np, fps=int(fps), format="mp4")})
 
 
 def run():
