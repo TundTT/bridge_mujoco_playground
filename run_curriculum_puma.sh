@@ -16,6 +16,7 @@ cd /home/tund/notebooks/bridge_mujoco_playground
 source .venv/bin/activate
 
 WANDB_PROJECT="bridge_crossing_puma"
+WANDB_GROUP="${WANDB_GROUP:-v4_no_forward_vel}"
 SKIP_TO_STAGE="${SKIP_TO_STAGE:-1}"
 INIT_CKPT="${INIT_CKPT:-}"
 
@@ -46,6 +47,7 @@ run_stage() {
     --playground_config_overrides "{\"bridge_half_width\": ${half_width}}" \
     --wandb_project "${WANDB_PROJECT}" \
     --wandb_run_name "stage${stage}_${width_str}" \
+    --wandb_group "${WANDB_GROUP}" \
     --use_wandb \
     2>&1 | tee "${logfile}" >/dev/null
 

@@ -126,6 +126,9 @@ _WANDB_PROJECT = flags.DEFINE_string(
 _WANDB_RUN_NAME = flags.DEFINE_string(
     "wandb_run_name", None, "WandB display name for the run (defaults to suffix or exp_name)"
 )
+_WANDB_GROUP = flags.DEFINE_string(
+    "wandb_group", None, "WandB group name for organising related runs"
+)
 _PLAY_ONLY = flags.DEFINE_boolean(
     "play_only", False, "If true, only play with the model and do not train"
 )
@@ -364,7 +367,12 @@ def main(argv):
           "Install via: pip install wandb"
       )
     wandb_run_name = _WANDB_RUN_NAME.value or _SUFFIX.value or exp_name
-    wandb.init(project=_WANDB_PROJECT.value, entity="Tund", name=wandb_run_name)
+    wandb.init(
+        project=_WANDB_PROJECT.value,
+        entity="Tund",
+        name=wandb_run_name,
+        group=_WANDB_GROUP.value or None,
+    )
     wandb.config.update(env_cfg.to_dict())
     wandb.config.update({"env_name": _ENV_NAME.value})
 
