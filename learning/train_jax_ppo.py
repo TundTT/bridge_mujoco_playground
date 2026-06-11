@@ -599,6 +599,7 @@ def main(argv):
         frames = _vid_env.render(
             trajectory[::_vid_render_every],
             height=480, width=640,
+            camera="track",
             scene_option=_vid_scene,
         )
         # Save locally for inspection.
@@ -711,7 +712,7 @@ def main(argv):
   for i, rollout in enumerate(trajectories):
     traj = rollout[::render_every]
     frames = infer_env.render(
-        traj, height=480, width=640, scene_option=scene_option
+        traj, height=480, width=640, camera="track", scene_option=scene_option
     )
     video_path = logdir / f"rollout{i}.mp4"
     media.write_video(video_path, frames, fps=fps)
