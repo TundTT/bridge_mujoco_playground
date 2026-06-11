@@ -239,6 +239,16 @@ class BridgeCrossing(go1_base.Go1Env):
     # Oscillation detection: episode sum of sign(x_vel). Near 0 → oscillating;
     # near +episode_length → always forward; plotted in WandB as metric/x_direction.
     metrics["metric/x_direction"] = jp.zeros(())
+    # Foot lateral position diagnostics (signed y, world frame).
+    # FR=0, FL=1, RR=2, RL=3. Episode sums → divide by ep_len for mean.
+    metrics["metric/y_FR"] = jp.zeros(())
+    metrics["metric/y_FL"] = jp.zeros(())
+    metrics["metric/y_RR"] = jp.zeros(())
+    metrics["metric/y_RL"] = jp.zeros(())
+    # Front-foot lateral span: |y_FL - y_FR|. Near 0 → triangle stance.
+    metrics["metric/front_foot_spread"] = jp.zeros(())
+    # Mean forward velocity per step.
+    metrics["metric/x_vel"] = jp.zeros(())
 
     obs = self._get_obs(data, info)
     reward, done = jp.zeros(2)
@@ -299,6 +309,13 @@ class BridgeCrossing(go1_base.Go1Env):
     state.metrics["metric/x_direction"] = jp.sign(
         self.get_local_linvel(data)[0]
     )
+    foot_y = data.site_xpos[self._feet_site_id, 1]  # FR, FL, RR, RL
+    state.metrics["metric/y_FR"] = foot_y[0]
+    state.metrics["metric/y_FL"] = foot_y[1]
+    state.metrics["metric/y_RR"] = foot_y[2]
+    state.metrics["metric/y_RL"] = foot_y[3]
+    state.metrics["metric/front_foot_spread"] = jp.abs(foot_y[1] - foot_y[0])
+    state.metrics["metric/x_vel"] = self.get_local_linvel(data)[0]
 
     done = done.astype(reward.dtype)
     return state.replace(data=data, obs=obs, reward=reward, done=done)

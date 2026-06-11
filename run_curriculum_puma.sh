@@ -16,7 +16,7 @@ cd /home/tund/notebooks/bridge_mujoco_playground
 source .venv/bin/activate
 
 WANDB_PROJECT="bridge_crossing_puma"
-WANDB_GROUP="${WANDB_GROUP:-v4_no_forward_vel}"
+WANDB_GROUP="${WANDB_GROUP:-v5_foot_diagnostics}"
 SKIP_TO_STAGE="${SKIP_TO_STAGE:-1}"
 INIT_CKPT="${INIT_CKPT:-}"
 
