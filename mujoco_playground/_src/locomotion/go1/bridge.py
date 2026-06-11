@@ -88,14 +88,8 @@ def default_config() -> config_dict.ConfigDict:
               # PUMA-style foothold guidance rewards.
               # Dense: exp(-(|y_FR| + |y_FL|)) rewards front feet near centreline.
               # Sparse: bonus when all 4 feet land within bridge half-width.
-              # Scale reduced from 2.0 → 0.5: at 2.0 the foot-precision local
-              # optimum dominates over forward progress (see oscillation analysis).
-              foothold_dense=0.5,
+              foothold_dense=2.0,
               foothold_sparse=1.0,
-              # Anti-oscillation: penalise backward (-x) velocity. Without this,
-              # the robot can collect forward_vel reward on the forward stroke and
-              # zero cost on the backward stroke, making oscillation attractive.
-              backward_vel=-2.0,
           ),
       ),
       impl="jax",
@@ -459,8 +453,6 @@ class BridgeCrossing(go1_base.Go1Env):
         # PUMA foothold guidance rewards.
         "foothold_dense": self._reward_foothold_dense(data),
         "foothold_sparse": self._reward_foothold_sparse(data),
-        # Anti-oscillation: cost for backward (-x) velocity.
-        "backward_vel": self._cost_backward_vel(self.get_local_linvel(data)),
     }
 
   def _reward_forward_vel(self, local_vel: jax.Array) -> jax.Array:
