@@ -88,8 +88,14 @@ def default_config() -> config_dict.ConfigDict:
               # PUMA-style foothold guidance rewards.
               # Dense: exp(-(|y_FR| + |y_FL|)) rewards front feet near centreline.
               # Sparse: bonus when all 4 feet land within bridge half-width.
-              foothold_dense=2.0,
+              # Scale reduced from 2.0 → 0.5: at 2.0 the foot-precision local
+              # optimum dominates over forward progress (see oscillation analysis).
+              foothold_dense=0.5,
               foothold_sparse=1.0,
+              # Anti-oscillation: penalise backward (-x) velocity. Without this,
+              # the robot can collect forward_vel reward on the forward stroke and
+              # zero cost on the backward stroke, making oscillation attractive.
+              backward_vel=-2.0,
           ),
       ),
       impl="jax",
@@ -228,11 +234,17 @@ class BridgeCrossing(go1_base.Go1Env):
         "last_contact": jp.zeros(4, dtype=bool),
         "swing_peak": jp.zeros(4),
         "obs_history": jp.zeros((self._config.history_len - 1, _PROPRIO_SIZE)),
+        # Monotone progress: tracks the furthest x ever reached this episode so
+        # that progress_to_goal rewards forward exploration, not average position.
+        "max_x_reached": qpos[0],
     }
 
     metrics = {}
     for k in self._config.reward_config.scales.keys():
       metrics[f"reward/{k}"] = jp.zeros(())
+    # Oscillation detection: episode sum of sign(x_vel). Near 0 → oscillating;
+    # near +episode_length → always forward; plotted in WandB as metric/x_direction.
+    metrics["metric/x_direction"] = jp.zeros(())
 
     obs = self._get_obs(data, info)
     reward, done = jp.zeros(2)
@@ -265,6 +277,11 @@ class BridgeCrossing(go1_base.Go1Env):
     success = self._get_success(data)
     done = failure | success
 
+    # Advance monotone progress tracker before computing rewards.
+    state.info["max_x_reached"] = jp.maximum(
+        state.info["max_x_reached"], data.qpos[0]
+    )
+
     rewards = self._get_reward(
         data, action, state.info, failure, success, first_contact
     )
@@ -282,6 +299,12 @@ class BridgeCrossing(go1_base.Go1Env):
     state.info["swing_peak"] *= ~contact
     for k, v in rewards.items():
       state.metrics[f"reward/{k}"] = v
+    # Oscillation detector: +1 when moving forward, -1 backward. Episode sum
+    # near 0 means the robot is oscillating; near +episode_length means pure
+    # forward motion. Visible in WandB under eval/.../metric/x_direction.
+    state.metrics["metric/x_direction"] = jp.sign(
+        self.get_local_linvel(data)[0]
+    )
 
     done = done.astype(reward.dtype)
     return state.replace(data=data, obs=obs, reward=reward, done=done)
@@ -422,7 +445,8 @@ class BridgeCrossing(go1_base.Go1Env):
         "energy": self._cost_energy(data.qvel[6:], data.actuator_force),
         "termination": self._cost_termination(failure),
         "success": self._reward_success(success),
-        "progress_to_goal": self._reward_progress_to_goal(data.qpos[0]),
+        # Monotone: use max_x_reached so backward movement never improves reward.
+        "progress_to_goal": self._reward_progress_to_goal(info["max_x_reached"]),
         "lateral_deviation": self._cost_lateral_deviation(data.qpos[1]),
         "heading": self._cost_heading(
             data.site_xmat[self._imu_site_id] @ jp.array([1.0, 0.0, 0.0])
@@ -435,17 +459,20 @@ class BridgeCrossing(go1_base.Go1Env):
         # PUMA foothold guidance rewards.
         "foothold_dense": self._reward_foothold_dense(data),
         "foothold_sparse": self._reward_foothold_sparse(data),
+        # Anti-oscillation: cost for backward (-x) velocity.
+        "backward_vel": self._cost_backward_vel(self.get_local_linvel(data)),
     }
 
   def _reward_forward_vel(self, local_vel: jax.Array) -> jax.Array:
     return jp.clip(local_vel[0], 0.0, 2.0)
 
-  def _reward_progress_to_goal(self, x_pos: jax.Array) -> jax.Array:
+  def _reward_progress_to_goal(self, max_x_reached: jax.Array) -> jax.Array:
     # Log-shaped gradient from spawn (x=-1.5) to goal (x=5.5).
-    # Steep near spawn for fast early learning, tapers toward goal so the
-    # success bonus dominates the final push onto Platform B.
-    # Shift so log argument = 1.0 at spawn (log=0) and 8.0 at goal (log=2.079).
-    x_shifted = jp.clip(x_pos + 2.5, 1.0, 8.0)
+    # Accepts max_x_reached (monotonically non-decreasing) so that backward
+    # movement never improves this reward — eliminating the oscillation local
+    # optimum where the robot averages a moderate x position by going back and
+    # forth instead of pushing steadily forward.
+    x_shifted = jp.clip(max_x_reached + 2.5, 1.0, 8.0)
     return jp.log(x_shifted) / jp.log(jp.array(8.0))
 
   def _cost_lateral_deviation(self, y_pos: jax.Array) -> jax.Array:
@@ -526,3 +553,13 @@ class BridgeCrossing(go1_base.Go1Env):
     foot_y = data.site_xpos[self._feet_site_id, 1]  # (4,) FR, FL, RR, RL
     all_on_bridge = jp.all(jp.abs(foot_y) < self._config.bridge_half_width)
     return all_on_bridge.astype(jp.float32)
+
+  def _cost_backward_vel(self, local_vel: jax.Array) -> jax.Array:
+    """Penalise backward (-x) velocity to deter back-and-forth oscillation.
+
+    Returns the magnitude of any backward velocity (≥ 0). Combined with the
+    negative scale in reward_config, this imposes a cost symmetric to the
+    forward_vel reward, eliminating the free ride that oscillation gets from
+    forward strokes yielding reward while backward strokes cost nothing.
+    """
+    return jp.maximum(0.0, -local_vel[0])
