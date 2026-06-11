@@ -71,7 +71,7 @@ def default_config() -> config_dict.ConfigDict:
       foothold_prior_noise_std=0.0,
       reward_config=config_dict.create(
           scales=config_dict.create(
-              forward_vel=2.0,
+              forward_vel=0.0,
               orientation=-5.0,
               alive=0.1,
               torques=-0.0002,
@@ -429,7 +429,6 @@ class BridgeCrossing(go1_base.Go1Env):
       first_contact: jax.Array,
   ) -> dict[str, jax.Array]:
     return {
-        "forward_vel": self._reward_forward_vel(self.get_local_linvel(data)),
         "orientation": self._cost_orientation(self.get_upvector(data)),
         "alive": jp.ones(()),
         "torques": self._cost_torques(data.actuator_force),
