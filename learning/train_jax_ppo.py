@@ -475,6 +475,13 @@ def main(argv):
         for k, v in reward_terms:
           term = k.split("reward/")[-1]
           print(f"  reward/{term}: {float(v):.5f}")
+      metric_terms = sorted(
+          (k, v) for k, v in metrics.items()
+          if "/metric/" in k and not k.endswith("_std")
+      )
+      for k, v in metric_terms:
+        term = k.split("metric/")[-1]
+        print(f"  metric/{term}: {float(v):.5f}")
     if _LOG_TRAINING_METRICS.value:
       if "episode/sum_reward" in metrics:
         print(
@@ -598,14 +605,7 @@ def main(argv):
         vid_path = logdir / f"rollout_step{current_step:012d}.mp4"
         media.write_video(str(vid_path), frames, fps=_vid_fps)
 
-        # Log to WandB as a numpy array (T, C, H, W) uint8 rather than a
-        # file path. This avoids double-encoding and the black-border padding
-        # that H.264 adds when dimensions aren't divisible by 2. We also crop
-        # to even dimensions explicitly so the codec never pads.
-        frames_np = np.asarray(frames)  # (T, H, W, 3) uint8
-        h, w = frames_np.shape[1], frames_np.shape[2]
-        frames_np = frames_np[:, : h - h % 2, : w - w % 2, :]  # even dims
-        frames_np = np.transpose(frames_np, (0, 3, 1, 2))  # (T, 3, H, W)
+        frames_np = np.transpose(np.asarray(frames), (0, 3, 1, 2))  # (T,H,W,3)→(T,C,H,W)
         wandb.log(
             {"rollout_video": wandb.Video(frames_np, fps=int(_vid_fps), format="mp4")},
             step=current_step,
@@ -717,10 +717,7 @@ def main(argv):
     media.write_video(video_path, frames, fps=fps)
     print(f"Rollout video saved as '{video_path}'.")
     if _USE_WANDB.value and wandb is not None:
-      frames_np = np.asarray(frames)  # (T, H, W, 3) uint8
-      h, w = frames_np.shape[1], frames_np.shape[2]
-      frames_np = frames_np[:, : h - h % 2, : w - w % 2, :]  # even dims
-      frames_np = np.transpose(frames_np, (0, 3, 1, 2))  # (T, 3, H, W)
+      frames_np = np.transpose(np.asarray(frames), (0, 3, 1, 2))  # (T,H,W,3)→(T,C,H,W)
       wandb.log({f"rollout_video_{i}": wandb.Video(frames_np, fps=int(fps), format="mp4")})
 
 
