@@ -71,7 +71,7 @@ def default_config() -> config_dict.ConfigDict:
       foothold_prior_noise_std=0.0,
       reward_config=config_dict.create(
           scales=config_dict.create(
-              forward_vel=0.5,
+              # forward_vel removed: frontier_delta subsumes directional signal.
               orientation=-5.0,
               alive=0.1,
               torques=-0.0002,
@@ -80,15 +80,17 @@ def default_config() -> config_dict.ConfigDict:
               termination=-1.0,
               success=5000.0,
               feet_air_time=0.0,
-              progress_to_goal=3.0,
+              # Frontier delta: rewards metres of NEW ground covered per step.
+              # Oscillation-proof (backward=0), loiter-proof (standing=0),
+              # constant gradient across full bridge (no log decay).
+              frontier_delta=2.0,
               lateral_deviation=-3.0,
               heading=-2.0,
               foot_off_bridge=-5.0,
               foot_lateral_deviation=-1.0,
-              # PUMA-style foothold guidance rewards.
-              # Dense: exp(-(|y_FR| + |y_FL|)) rewards front feet near centreline.
-              # Sparse: bonus when all 4 feet land within bridge half-width.
-              foothold_dense=2.0,
+              # Edge-margin foothold: full reward once foot is 5cm inside edge.
+              # No centreline attractor → no triangle stance.
+              foothold_dense=1.0,
               foothold_sparse=1.0,
           ),
       ),
@@ -228,9 +230,10 @@ class BridgeCrossing(go1_base.Go1Env):
         "last_contact": jp.zeros(4, dtype=bool),
         "swing_peak": jp.zeros(4),
         "obs_history": jp.zeros((self._config.history_len - 1, _PROPRIO_SIZE)),
-        # Monotone progress: tracks the furthest x ever reached this episode so
-        # that progress_to_goal rewards forward exploration, not average position.
+        # Frontier tracker: max x reached this episode (monotone).
         "max_x_reached": qpos[0],
+        # Delta passed to _get_reward each step (metres of new ground covered).
+        "progress_delta": jp.zeros(()),
     }
 
     metrics = {}
@@ -281,13 +284,13 @@ class BridgeCrossing(go1_base.Go1Env):
     success = self._get_success(data)
     done = failure | success
 
-    # Advance monotone progress tracker before computing rewards.
-    state.info["max_x_reached"] = jp.maximum(
-        state.info["max_x_reached"], data.qpos[0]
-    )
+    # Frontier delta: metres of NEW ground covered this step (≥0, loiter/backward→0).
+    new_max = jp.maximum(state.info["max_x_reached"], data.qpos[0])
+    state.info["progress_delta"] = new_max - state.info["max_x_reached"]
+    state.info["max_x_reached"] = new_max
 
     rewards = self._get_reward(
-        data, action, state.info, failure, success, first_contact
+        data, action, state.info, failure, success, first_contact, contact_filt
     )
     rewards = {
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
@@ -444,9 +447,9 @@ class BridgeCrossing(go1_base.Go1Env):
       failure: jax.Array,
       success: jax.Array,
       first_contact: jax.Array,
+      contact: jax.Array,
   ) -> dict[str, jax.Array]:
     return {
-        "forward_vel": self._reward_forward_vel(self.get_local_linvel(data)),
         "orientation": self._cost_orientation(self.get_upvector(data)),
         "alive": jp.ones(()),
         "torques": self._cost_torques(data.actuator_force),
@@ -456,8 +459,8 @@ class BridgeCrossing(go1_base.Go1Env):
         "energy": self._cost_energy(data.qvel[6:], data.actuator_force),
         "termination": self._cost_termination(failure),
         "success": self._reward_success(success),
-        # Monotone: use max_x_reached so backward movement never improves reward.
-        "progress_to_goal": self._reward_progress_to_goal(info["max_x_reached"]),
+        # Frontier delta: m/s of new ground — zero when loitering or retreating.
+        "frontier_delta": info["progress_delta"] / self.dt,
         "lateral_deviation": self._cost_lateral_deviation(data.qpos[1]),
         "heading": self._cost_heading(
             data.site_xmat[self._imu_site_id] @ jp.array([1.0, 0.0, 0.0])
@@ -467,8 +470,8 @@ class BridgeCrossing(go1_base.Go1Env):
         ),
         "foot_off_bridge": self._cost_foot_off_bridge(data, first_contact),
         "foot_lateral_deviation": self._cost_foot_lateral_deviation(data),
-        # PUMA foothold guidance rewards.
-        "foothold_dense": self._reward_foothold_dense(data),
+        # Edge-margin foothold: guides feet inside bridge without centreline pull.
+        "foothold_dense": self._reward_foothold_dense(data, contact),
         "foothold_sparse": self._reward_foothold_sparse(data),
     }
 
@@ -544,14 +547,19 @@ class BridgeCrossing(go1_base.Go1Env):
     excess = jp.maximum(0.0, jp.abs(foot_y) - threshold)
     return jp.sum(jp.square(excess))
 
-  def _reward_foothold_dense(self, data: mjx.Data) -> jax.Array:
-    """Dense PUMA-style foothold reward: exp(-(|y_FR| + |y_FL|)).
+  def _reward_foothold_dense(
+      self, data: mjx.Data, contact: jax.Array
+  ) -> jax.Array:
+    """Edge-margin foothold reward: saturates at 5cm inside bridge edge.
 
-    Rewards the two front feet for staying close to the bridge centreline.
-    Ranges from 0 (far off centre) to 1.0 (exactly on centre).
+    Gives full reward (1.0) once a foot has ≥5 cm of clearance from the edge.
+    Airborne feet are treated as fully rewarded (neutral).
+    No centreline attractor — no triangle stance.
     """
     foot_y = data.site_xpos[self._feet_site_id, 1]  # (4,) FR, FL, RR, RL
-    return jp.exp(-(jp.abs(foot_y[0]) + jp.abs(foot_y[1])))
+    margin = self._config.bridge_half_width - jp.abs(foot_y)
+    per_foot = jp.clip(margin / 0.05, 0.0, 1.0)
+    return jp.mean(jp.where(contact, per_foot, jp.ones(4)))
 
   def _reward_foothold_sparse(self, data: mjx.Data) -> jax.Array:
     """Sparse PUMA-style foothold reward: 1 when all 4 feet are within bridge.
