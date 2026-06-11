@@ -33,8 +33,8 @@ _HM_Y_MIN, _HM_Y_MAX = -1.0, 1.0
 _HM_CELL = 0.03
 _HM_PATCH = 13
 
-# linvel(3)+gyro(3)+gravity(3)+joint_angles(12)+joint_vel(12)+last_act(12)+x_progress(1)
-_PROPRIO_SIZE = 46
+# linvel(3)+gyro(3)+gravity(3)+joint_angles(12)+joint_vel(12)+last_act(12)+x_progress(1)+foot_y(4)
+_PROPRIO_SIZE = 50
 
 
 def default_config() -> config_dict.ConfigDict:
@@ -63,8 +63,12 @@ def default_config() -> config_dict.ConfigDict:
               gyro=0.2,
               gravity=0.05,
               linvel=0.1,
+              foot_y=0.005,
           ),
       ),
+      # PUMA foothold prior: noise added to ground-truth foot y observations to
+      # simulate real-world estimation error. 0.0 = perfect oracle signal.
+      foothold_prior_noise_std=0.0,
       reward_config=config_dict.create(
           scales=config_dict.create(
               forward_vel=2.0,
@@ -81,6 +85,11 @@ def default_config() -> config_dict.ConfigDict:
               heading=-2.0,
               foot_off_bridge=-5.0,
               foot_lateral_deviation=-1.0,
+              # PUMA-style foothold guidance rewards.
+              # Dense: exp(-(|y_FR| + |y_FL|)) rewards front feet near centreline.
+              # Sparse: bonus when all 4 feet land within bridge half-width.
+              foothold_dense=2.0,
+              foothold_sparse=1.0,
           ),
       ),
       impl="jax",
@@ -339,6 +348,18 @@ class BridgeCrossing(go1_base.Go1Env):
 
     local_heightmap = self._get_local_heightmap(data)  # (169,)
 
+    # PUMA foothold prior: signed lateral y-distance of each foot from bridge
+    # centreline (y=0). Positive = right of centre, negative = left. Tiny
+    # Gaussian noise simulates real-world estimation error; defaults to 0.0.
+    foot_y = data.site_xpos[self._feet_site_id, 1]  # (4,) FR, FL, RR, RL
+    info["rng"], noise_rng = jax.random.split(info["rng"])
+    noisy_foot_y = (
+        foot_y
+        + jax.random.normal(noise_rng, (4,))
+        * self._config.noise_config.level
+        * self._config.noise_config.scales.foot_y
+    )
+
     proprio = jp.hstack([
         noisy_linvel,                             # 3
         noisy_gyro,                               # 3
@@ -347,7 +368,8 @@ class BridgeCrossing(go1_base.Go1Env):
         noisy_joint_vel,                          # 12
         info["last_act"],                         # 12
         jp.array([x_progress]),                   # 1
-    ])  # total: 46 = _PROPRIO_SIZE
+        noisy_foot_y,                             # 4 — PUMA foothold prior
+    ])  # total: 50 = _PROPRIO_SIZE
 
     if self._config.history_len > 1:
       state = jp.hstack([
@@ -410,6 +432,9 @@ class BridgeCrossing(go1_base.Go1Env):
         ),
         "foot_off_bridge": self._cost_foot_off_bridge(data, first_contact),
         "foot_lateral_deviation": self._cost_foot_lateral_deviation(data),
+        # PUMA foothold guidance rewards.
+        "foothold_dense": self._reward_foothold_dense(data),
+        "foothold_sparse": self._reward_foothold_sparse(data),
     }
 
   def _reward_forward_vel(self, local_vel: jax.Array) -> jax.Array:
@@ -482,3 +507,22 @@ class BridgeCrossing(go1_base.Go1Env):
     threshold = jp.maximum(self._config.bridge_half_width - 0.02, 0.0)
     excess = jp.maximum(0.0, jp.abs(foot_y) - threshold)
     return jp.sum(jp.square(excess))
+
+  def _reward_foothold_dense(self, data: mjx.Data) -> jax.Array:
+    """Dense PUMA-style foothold reward: exp(-(|y_FR| + |y_FL|)).
+
+    Rewards the two front feet for staying close to the bridge centreline.
+    Ranges from 0 (far off centre) to 1.0 (exactly on centre).
+    """
+    foot_y = data.site_xpos[self._feet_site_id, 1]  # (4,) FR, FL, RR, RL
+    return jp.exp(-(jp.abs(foot_y[0]) + jp.abs(foot_y[1])))
+
+  def _reward_foothold_sparse(self, data: mjx.Data) -> jax.Array:
+    """Sparse PUMA-style foothold reward: 1 when all 4 feet are within bridge.
+
+    Gives a binary bonus only when every foot is simultaneously within the
+    bridge half-width, analogous to PUMA's simultaneous dual-foot landing bonus.
+    """
+    foot_y = data.site_xpos[self._feet_site_id, 1]  # (4,) FR, FL, RR, RL
+    all_on_bridge = jp.all(jp.abs(foot_y) < self._config.bridge_half_width)
+    return all_on_bridge.astype(jp.float32)
