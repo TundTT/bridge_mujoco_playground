@@ -89,7 +89,7 @@ def default_config() -> config_dict.ConfigDict:
               lateral_deviation=-3.0,
               heading=-2.0,
               foot_off_bridge=-50.0,
-              foot_off_virtual=-15.0,
+              foot_off_virtual=-10.0,
               feet_stale_air=-2.0,
               lin_vel_z=-2.0,
               ang_vel_xy=-0.1,
