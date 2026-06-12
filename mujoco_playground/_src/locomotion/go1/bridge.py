@@ -545,10 +545,13 @@ class BridgeCrossing(go1_base.Go1Env):
       first_contact: jax.Array,
       contact_filt: jax.Array,
   ) -> dict[str, jax.Array]:
-    # Foothold quality restricted to contacting feet only.
     foot_y = data.site_xpos[self._feet_site_id, 1]
     margin = info["virtual_hw"] - jp.abs(foot_y)
-    quality = jp.clip(margin / jp.minimum(info["virtual_hw"], 0.10), 0.0, 1.0)
+    # Soft exponential quality: = 1.0 inside virtual_hw, decays smoothly
+    # outside with 5cm length scale. Hard clip-at-0 killed the inboard gradient
+    # once feet were outside virtual_hw — the frontier term gave zero signal
+    # from natural-stance (|y|~0.14) all the way to the virtual edge.
+    quality = jp.exp(jp.minimum(margin, 0.0) / 0.05)
     # Mean over ALL four feet (airborne and stance) so lifting a low-quality
     # foot cannot raise the multiplier — only adducting all feet inboard can.
     quality_mean = jp.mean(quality)
