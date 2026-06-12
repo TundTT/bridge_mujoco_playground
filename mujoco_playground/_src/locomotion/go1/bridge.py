@@ -32,6 +32,7 @@ _HM_X_MIN, _HM_X_MAX = -3.0, 7.0
 _HM_Y_MIN, _HM_Y_MAX = -1.0, 1.0
 _HM_CELL = 0.03
 _HM_PATCH = 13
+_FOOT_RADIUS = 0.023  # Go1 foot collision sphere radius (m)
 
 # linvel(3)+gyro(3)+gravity(3)+joint_angles(12)+joint_vel(12)+last_act(12)+x_progress(1)+foot_y(4)+trunk_y(1)+bridge_hw(1)
 _PROPRIO_SIZE = 52
@@ -88,6 +89,7 @@ def default_config() -> config_dict.ConfigDict:
               lateral_deviation=-3.0,
               heading=-2.0,
               foot_off_bridge=-50.0,
+              foot_off_virtual=-30.0,
               lin_vel_z=-2.0,
               ang_vel_xy=-0.1,
               feet_slip=-0.25,
@@ -537,7 +539,10 @@ class BridgeCrossing(go1_base.Go1Env):
     contact_f = contact_filt.astype(jp.float32)
     n_contact = jp.maximum(contact_f.sum(), 1.0)
     quality_mean = jp.sum(quality * contact_f) / n_contact
-    foothold_multiplier = 0.5 + 0.5 * quality_mean  # [0.5, 1.0]
+    # Floor fades from 0.5 (proven wide regime, vhw >= 0.15) to 0.0 (target
+    # vhw <= 0.10), so a fully wide stance earns zero frontier at narrow widths.
+    floor = 0.5 * jp.clip((info["virtual_hw"] - 0.10) / 0.05, 0.0, 1.0)
+    foothold_multiplier = floor + (1.0 - floor) * quality_mean
 
     # Contact-gated frontier: pay out all banked progress at touchdown,
     # weighted by foothold quality. No contact → zero income this step.
@@ -566,6 +571,7 @@ class BridgeCrossing(go1_base.Go1Env):
             info["feet_air_time"], first_contact
         ),
         "foot_off_bridge": self._cost_foot_off_bridge(data, first_contact),
+        "foot_off_virtual": self._cost_foot_off_virtual(data, info, contact_filt),
         "lin_vel_z": self._cost_lin_vel_z(global_linvel),
         "ang_vel_xy": self._cost_ang_vel_xy(global_angvel),
         "feet_slip": self._cost_feet_slip(data, contact_filt),
@@ -675,6 +681,19 @@ class BridgeCrossing(go1_base.Go1Env):
     )
     on_surface = self._world_heightmap[xi, yi]  # (4,) binary
     return jp.sum(first_contact * (1.0 - on_surface))
+
+  def _cost_foot_off_virtual(
+      self, data: mjx.Data, info: dict[str, Any], contact_filt: jax.Array
+  ) -> jax.Array:
+    """Linear hinge on lateral overshoot of contacting feet beyond virtual_hw.
+
+    Fires every contact step (not first_contact) so cadence cannot be reduced
+    to dodge the penalty. Zero inside the virtual boundary; grows linearly with
+    overshoot outside it, extending the gradient where quality_mean clips at 0.
+    """
+    foot_y = data.site_xpos[self._feet_site_id, 1]
+    overshoot = jp.maximum(jp.abs(foot_y) + _FOOT_RADIUS - info["virtual_hw"], 0.0)
+    return jp.sum(overshoot * contact_filt.astype(jp.float32))
 
   def _cost_backward_vel(self, local_vel: jax.Array) -> jax.Array:
     """Penalise backward (-x) velocity to deter back-and-forth oscillation.
