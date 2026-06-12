@@ -237,6 +237,8 @@ class BridgeCrossing(go1_base.Go1Env):
         "obs_history": jp.zeros((self._config.history_len - 1, _PROPRIO_SIZE)),
         # Frontier tracker: max x reached this episode (monotone).
         "max_x_reached": qpos[0],
+        # Spawn x: used by step() to reset max_x_reached on episode boundary.
+        "init_x": qpos[0],
         # Delta passed to _get_reward each step (metres of new ground covered).
         "progress_delta": jp.zeros(()),
         # Per-episode virtual bridge width for foothold shaping.
@@ -336,13 +338,46 @@ class BridgeCrossing(go1_base.Go1Env):
     state.metrics["metric/max_foot_y"] = jp.max(jp.abs(foot_y))
     state.metrics["metric/virtual_hw"] = state.info["virtual_hw"]
 
+    # ── Episode-boundary resets (fix BraxAutoResetWrapper info leak) ──────────
+    # BraxAutoResetWrapper only resets data+obs, not info. We manually zero all
+    # per-episode accumulators so the next episode starts clean.
+    state.info["rng"], key = jax.random.split(state.info["rng"])
+    new_vhw = jax.random.uniform(
+        key, (),
+        minval=self._config.virtual_hw_min,
+        maxval=self._config.bridge_half_width,
+    )
+    state.info["virtual_hw"] = jp.where(done, new_vhw, state.info["virtual_hw"])
+    state.info["max_x_reached"] = jp.where(
+        done, state.info["init_x"], state.info["max_x_reached"]
+    )
+    state.info["feet_air_time"] = jp.where(
+        done, jp.zeros(4), state.info["feet_air_time"]
+    )
+    state.info["last_contact"] = jp.where(
+        done, jp.zeros(4, dtype=bool), state.info["last_contact"]
+    )
+    state.info["swing_peak"] = jp.where(
+        done, jp.zeros(4), state.info["swing_peak"]
+    )
+    state.info["last_act"] = jp.where(
+        done, jp.zeros_like(state.info["last_act"]), state.info["last_act"]
+    )
+    state.info["last_last_act"] = jp.where(
+        done, jp.zeros_like(state.info["last_last_act"]), state.info["last_last_act"]
+    )
+    state.info["obs_history"] = jp.where(
+        done, jp.zeros_like(state.info["obs_history"]), state.info["obs_history"]
+    )
+
     done = done.astype(reward.dtype)
     return state.replace(data=data, obs=obs, reward=reward, done=done)
 
   def _get_failure(self, data: mjx.Data) -> jax.Array:
     tilt = self.get_upvector(data)[-1] < 0.5  # terminate at ~60° tilt
     height = data.qpos[2] < self._config.fall_threshold
-    return tilt | height
+    nan_explosion = ~jp.isfinite(data.qpos).all()
+    return tilt | height | nan_explosion
 
   def _get_success(self, data: mjx.Data) -> jax.Array:
     # Robot has confidently crossed — reached halfway into Platform B.
