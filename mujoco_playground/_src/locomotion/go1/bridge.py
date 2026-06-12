@@ -32,8 +32,6 @@ _HM_X_MIN, _HM_X_MAX = -3.0, 7.0
 _HM_Y_MIN, _HM_Y_MAX = -1.0, 1.0
 _HM_CELL = 0.03
 _HM_PATCH = 13
-# Platform and bridge surface z (used to convert absolute foot z to relative clearance).
-_TERRAIN_Z = 0.5
 
 # linvel(3)+gyro(3)+gravity(3)+joint_angles(12)+joint_vel(12)+last_act(12)+x_progress(1)+foot_y(4)+trunk_y(1)+bridge_hw(1)
 _PROPRIO_SIZE = 52
@@ -530,20 +528,20 @@ class BridgeCrossing(go1_base.Go1Env):
       failure: jax.Array,
       success: jax.Array,
       first_contact: jax.Array,
-      contact: jax.Array,
+      contact_filt: jax.Array,
   ) -> dict[str, jax.Array]:
     # Foothold quality restricted to contacting feet only.
     foot_y = data.site_xpos[self._feet_site_id, 1]
     margin = info["virtual_hw"] - jp.abs(foot_y)
     quality = jp.clip(margin / jp.minimum(info["virtual_hw"], 0.10), 0.0, 1.0)
-    contact_f = contact.astype(jp.float32)
+    contact_f = contact_filt.astype(jp.float32)
     n_contact = jp.maximum(contact_f.sum(), 1.0)
     quality_mean = jp.sum(quality * contact_f) / n_contact
     foothold_multiplier = 0.5 + 0.5 * quality_mean  # [0.5, 1.0]
 
     # Contact-gated frontier: pay out all banked progress at touchdown,
     # weighted by foothold quality. No contact → zero income this step.
-    any_contact = jp.any(contact).astype(jp.float32)
+    any_contact = jp.any(contact_filt).astype(jp.float32)
     frontier_payout = (info["unpaid_progress"] / self.dt) * foothold_multiplier * any_contact
 
     global_linvel = self.get_global_linvel(data)
@@ -570,7 +568,7 @@ class BridgeCrossing(go1_base.Go1Env):
         "foot_off_bridge": self._cost_foot_off_bridge(data, first_contact),
         "lin_vel_z": self._cost_lin_vel_z(global_linvel),
         "ang_vel_xy": self._cost_ang_vel_xy(global_angvel),
-        "feet_slip": self._cost_feet_slip(data, contact),
+        "feet_slip": self._cost_feet_slip(data, contact_filt),
         "feet_clearance": self._cost_feet_clearance(data),
         "feet_height": self._cost_feet_height(info["swing_peak"], first_contact),
         "pose": self._reward_pose(data.qpos[7:]),
