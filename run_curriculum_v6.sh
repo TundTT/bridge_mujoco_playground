@@ -174,9 +174,14 @@ if [ "${SKIP_TO_STAGE}" -le 4 ]; then
   gate_advance 4 0.08 0.05 "0.16m" 200000000 "--episode_length 1500"
 fi
 
-# ── Stage 5: 0.10m, virtual fixed 0.05, ep_len=1500 ──────────────────────────
+# ── Stage 5: 0.13m, virtual fixed 0.05, ep_len=1500 — midpoint inserted after stage 4 failed at 0.10m ──
 if [ "${SKIP_TO_STAGE}" -le 5 ]; then
-  gate_advance 5 0.05 0.05 "0.10m" 200000000 "--episode_length 1500"
+  gate_advance 5 0.065 0.05 "0.13m" 150000000 "--episode_length 1500"
 fi
 
-echo "=== All 6 stages complete. Final checkpoint: ${CKPT} ===" >&2
+# ── Stage 6: 0.10m, virtual fixed 0.05, ep_len=1500 ──────────────────────────
+if [ "${SKIP_TO_STAGE}" -le 6 ]; then
+  gate_advance 6 0.05 0.05 "0.10m" 200000000 "--episode_length 1500"
+fi
+
+echo "=== All 7 stages complete. Final checkpoint: ${CKPT} ===" >&2
