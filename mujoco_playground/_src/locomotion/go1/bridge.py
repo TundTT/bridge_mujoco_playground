@@ -80,17 +80,12 @@ def default_config() -> config_dict.ConfigDict:
               alive=0.0,
               torques=-0.0002,
               action_rate=-0.01,
-              action_accel=-0.005,
-              # Joint acceleration penalty (rad/s²)² — joints only, not base DOFs.
-              dof_acc=-2.5e-8,
               energy=-0.001,
               termination=-200.0,
               success=5000.0,
-              # Frontier progress: (delta_max_x / dt) × foothold_quality.
-              # Monotone — standing earns zero, only new x territory pays.
+              # Contact-gated: progress banks during flight, pays at touchdown
+              # weighted by foothold quality of contacting feet only.
               frontier_delta=50.0,
-              # Air-time reward capped at 0.25s (raised from 0.15s so healthy
-              # trot swings earn positively; jitter <0.1s still pays a penalty).
               feet_air_time=2.0,
               lateral_deviation=-3.0,
               heading=-2.0,
@@ -247,15 +242,16 @@ class BridgeCrossing(go1_base.Go1Env):
         "rng": rng,
         "last_act": jp.zeros(self.mjx_model.nu),
         "last_last_act": jp.zeros(self.mjx_model.nu),
-        "last_qvel": jp.zeros(self.mjx_model.nv),
         "feet_air_time": jp.zeros(4),
         "last_contact": jp.zeros(4, dtype=bool),
         "swing_peak": jp.zeros(4),
         "obs_history": jp.zeros((self._config.history_len - 1, _PROPRIO_SIZE)),
-        # Frontier tracker: used by step() to compute delta_x for frontier_delta reward.
+        # Frontier tracker: max x reached this episode (monotone).
         "max_x_reached": qpos[0],
         # Spawn x: used by step() to reset max_x_reached on episode boundary.
         "init_x": qpos[0],
+        # Progress banked during flight steps; paid out at next touchdown.
+        "unpaid_progress": jp.zeros(()),
         # Per-episode virtual bridge width for foothold shaping.
         "virtual_hw": virtual_hw,
     }
@@ -307,8 +303,7 @@ class BridgeCrossing(go1_base.Go1Env):
     first_contact = (state.info["feet_air_time"] > 0.0) * contact_filt
     state.info["feet_air_time"] += self.dt
 
-    # Track swing peak relative to deck surface so feet_height/clearance work correctly.
-    p_fz = data.site_xpos[self._feet_site_id, -1] - _TERRAIN_Z
+    p_fz = data.site_xpos[self._feet_site_id, -1]
     state.info["swing_peak"] = jp.maximum(state.info["swing_peak"], p_fz)
 
     obs = self._get_obs(data, state.info)
@@ -321,15 +316,20 @@ class BridgeCrossing(go1_base.Go1Env):
     success = self._get_success(data)
     done = failure | success
 
-    # Compute frontier advance BEFORE updating max_x so delta > 0 when robot
-    # reaches new territory; after the update it would always be zero.
-    frontier_delta = jp.maximum(0.0, data.qpos[0] - state.info["max_x_reached"])
+    # Frontier delta: bank capped progress; payout fires at contact in _get_reward.
+    # Cap per-step credit at 0.6 m/s to prevent windfall payouts from long hops.
     new_max = jp.maximum(state.info["max_x_reached"], data.qpos[0])
+    capped_delta = jp.minimum(new_max - state.info["max_x_reached"], 0.6 * self.dt)
     state.info["max_x_reached"] = new_max
+    state.info["unpaid_progress"] = state.info["unpaid_progress"] + capped_delta
 
     rewards = self._get_reward(
-        data, action, state.info, failure, success, first_contact, contact_filt,
-        frontier_delta,
+        data, action, state.info, failure, success, first_contact, contact_filt
+    )
+
+    # Clear banked progress on any contact this step.
+    state.info["unpaid_progress"] = jp.where(
+        jp.any(contact_filt), jp.zeros(()), state.info["unpaid_progress"]
     )
     rewards = {
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
@@ -344,7 +344,6 @@ class BridgeCrossing(go1_base.Go1Env):
 
     state.info["last_last_act"] = state.info["last_act"]
     state.info["last_act"] = action
-    state.info["last_qvel"] = data.qvel
     state.info["feet_air_time"] *= ~contact
     state.info["last_contact"] = contact
     state.info["swing_peak"] *= ~contact
@@ -379,6 +378,9 @@ class BridgeCrossing(go1_base.Go1Env):
     state.info["max_x_reached"] = jp.where(
         boundary, state.info["init_x"], state.info["max_x_reached"]
     )
+    state.info["unpaid_progress"] = jp.where(
+        boundary, jp.zeros(()), state.info["unpaid_progress"]
+    )
     state.info["feet_air_time"] = jp.where(
         boundary, jp.zeros(4), state.info["feet_air_time"]
     )
@@ -393,9 +395,6 @@ class BridgeCrossing(go1_base.Go1Env):
     )
     state.info["last_last_act"] = jp.where(
         boundary, jp.zeros_like(state.info["last_last_act"]), state.info["last_last_act"]
-    )
-    state.info["last_qvel"] = jp.where(
-        boundary, jp.zeros_like(state.info["last_qvel"]), state.info["last_qvel"]
     )
     state.info["obs_history"] = jp.where(
         boundary, jp.zeros_like(state.info["obs_history"]), state.info["obs_history"]
@@ -532,7 +531,6 @@ class BridgeCrossing(go1_base.Go1Env):
       success: jax.Array,
       first_contact: jax.Array,
       contact: jax.Array,
-      frontier_delta: jax.Array,
   ) -> dict[str, jax.Array]:
     # Foothold quality restricted to contacting feet only.
     foot_y = data.site_xpos[self._feet_site_id, 1]
@@ -542,6 +540,11 @@ class BridgeCrossing(go1_base.Go1Env):
     n_contact = jp.maximum(contact_f.sum(), 1.0)
     quality_mean = jp.sum(quality * contact_f) / n_contact
     foothold_multiplier = 0.5 + 0.5 * quality_mean  # [0.5, 1.0]
+
+    # Contact-gated frontier: pay out all banked progress at touchdown,
+    # weighted by foothold quality. No contact → zero income this step.
+    any_contact = jp.any(contact).astype(jp.float32)
+    frontier_payout = (info["unpaid_progress"] / self.dt) * foothold_multiplier * any_contact
 
     global_linvel = self.get_global_linvel(data)
     global_angvel = self.get_global_angvel(data)
@@ -553,14 +556,10 @@ class BridgeCrossing(go1_base.Go1Env):
         "action_rate": self._cost_action_rate(
             action, info["last_act"], info["last_last_act"]
         ),
-        "action_accel": self._cost_action_accel(
-            action, info["last_act"], info["last_last_act"]
-        ),
-        "dof_acc": self._cost_dof_acc(data.qvel, info["last_qvel"]),
         "energy": self._cost_energy(data.qvel[6:], data.actuator_force),
         "termination": self._cost_termination(failure),
         "success": self._reward_success(success),
-        "frontier_delta": self._reward_frontier_delta(frontier_delta, foothold_multiplier),
+        "frontier_delta": frontier_payout,
         "lateral_deviation": self._cost_lateral_deviation(data.qpos[1]),
         "heading": self._cost_heading(
             data.site_xmat[self._imu_site_id] @ jp.array([1.0, 0.0, 0.0])
@@ -615,20 +614,6 @@ class BridgeCrossing(go1_base.Go1Env):
     del last_last_act
     return jp.sum(jp.square(act - last_act))
 
-  def _cost_action_accel(
-      self, act: jax.Array, last_act: jax.Array, last_last_act: jax.Array
-  ) -> jax.Array:
-    return jp.sum(jp.square(act - 2.0 * last_act + last_last_act))
-
-  def _cost_dof_acc(self, qvel: jax.Array, last_qvel: jax.Array) -> jax.Array:
-    # Joints only (qvel[6:]) — base DOFs excluded to avoid taxing touchdown impacts.
-    return jp.sum(jp.square((qvel[6:] - last_qvel[6:]) / self.dt))
-
-  def _reward_frontier_delta(
-      self, frontier_delta: jax.Array, foothold_multiplier: jax.Array
-  ) -> jax.Array:
-    return frontier_delta / self.dt * foothold_multiplier
-
   def _cost_termination(self, done: jax.Array) -> jax.Array:
     return done
 
@@ -638,8 +623,8 @@ class BridgeCrossing(go1_base.Go1Env):
   def _reward_feet_air_time(
       self, air_time: jax.Array, first_contact: jax.Array
   ) -> jax.Array:
-    # Cap at 0.25s: healthy trot swings earn positively; jitter <0.1s pays penalty.
-    capped = jp.minimum(air_time, 0.25)
+    # Cap at 0.15s: rewards stepping frequency without incentivising longer hops.
+    capped = jp.minimum(air_time, 0.15)
     return jp.sum((capped - 0.1) * first_contact)
 
   def _cost_lin_vel_z(self, global_linvel: jax.Array) -> jax.Array:
@@ -658,8 +643,7 @@ class BridgeCrossing(go1_base.Go1Env):
     feet_vel = data.sensordata[self._foot_linvel_sensor_adr]
     vel_xy = feet_vel[..., :2]
     vel_norm = jp.sqrt(jp.linalg.norm(vel_xy, axis=-1))
-    # Subtract deck z so clearance is relative to terrain surface, not world origin.
-    foot_z = data.site_xpos[self._feet_site_id, 2] - _TERRAIN_Z
+    foot_z = data.site_xpos[self._feet_site_id, 2]
     delta = jp.abs(foot_z - self._config.reward_config.max_foot_height)
     return jp.sum(delta * vel_norm)
 
