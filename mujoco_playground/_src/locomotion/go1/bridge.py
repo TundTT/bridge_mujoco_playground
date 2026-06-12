@@ -84,11 +84,11 @@ def default_config() -> config_dict.ConfigDict:
               # First-order action smoothness.
               action_rate=-0.01,
               # Second-order action smoothness (jitter penalty).
-              action_accel=-0.01,
-              # Joint acceleration penalty (rad/s²)².
-              dof_acc=-2.5e-7,
+              action_accel=-0.005,
+              # Joint acceleration penalty (rad/s²)² — joints only, not base DOFs.
+              dof_acc=-2.5e-8,
               energy=-0.001,
-              termination=-200.0,
+              termination=-100.0,
               success=5000.0,
               # Velocity tracking: exp(-|v_xy - target|²/0.25) × foothold_quality.
               # Replaces frontier_delta — concave in velocity so smooth > surge.
@@ -621,7 +621,8 @@ class BridgeCrossing(go1_base.Go1Env):
     return jp.sum(jp.square(act - 2.0 * last_act + last_last_act))
 
   def _cost_dof_acc(self, qvel: jax.Array, last_qvel: jax.Array) -> jax.Array:
-    return jp.sum(jp.square((qvel - last_qvel) / self.dt))
+    # Joints only (qvel[6:]) — base DOFs excluded to avoid taxing touchdown impacts.
+    return jp.sum(jp.square((qvel[6:] - last_qvel[6:]) / self.dt))
 
   def _reward_tracking_lin_vel(
       self, data: mjx.Data, foothold_multiplier: jax.Array
