@@ -477,10 +477,10 @@ def main(argv):
           print(f"  reward/{term}: {float(v):.5f}")
       metric_terms = sorted(
           (k, v) for k, v in metrics.items()
-          if "/metric/" in k and not k.endswith("_std")
+          if "episode_metric/" in k and not k.endswith("_std")
       )
       for k, v in metric_terms:
-        term = k.split("metric/")[-1]
+        term = k.split("episode_metric/")[-1]
         print(f"  metric/{term}: {float(v):.5f}")
     if _LOG_TRAINING_METRICS.value:
       if "episode/sum_reward" in metrics:
