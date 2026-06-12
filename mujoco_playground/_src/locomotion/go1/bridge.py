@@ -50,6 +50,10 @@ def default_config() -> config_dict.ConfigDict:
       soft_joint_pos_limit_factor=0.95,
       # Curriculum: bridge y half-extent in metres (0.4 = 0.8 m wide).
       bridge_half_width=0.4,
+      # Virtual half-width lower bound for per-episode foothold shaping.
+      # Each episode samples virtual_hw ~ U[virtual_hw_min, bridge_half_width].
+      # Reward and obs use virtual_hw; physical falls happen at bridge_half_width.
+      virtual_hw_min=0.15,
       # Terminate if root z drops below this (0.3 m below the 0.5 m platform surface).
       fall_threshold=0.2,
       # Terminate with success bonus when robot reaches this x (halfway into Platform B).
@@ -76,7 +80,7 @@ def default_config() -> config_dict.ConfigDict:
               torques=-0.0002,
               action_rate=-0.01,
               energy=-0.001,
-              termination=-1.0,
+              termination=-200.0,
               success=5000.0,
               feet_air_time=0.0,
               # Frontier delta × foothold quality multiplier (0.5..1.0).
@@ -217,6 +221,15 @@ class BridgeCrossing(go1_base.Go1Env):
     )
     data = mjx.forward(self.mjx_model, data)
 
+    # Sample virtual half-width for this episode: U[virtual_hw_min, bridge_half_width].
+    # Reward and obs use this value; physical falls still happen at bridge_half_width.
+    rng, key = jax.random.split(rng)
+    virtual_hw = jax.random.uniform(
+        key, (),
+        minval=self._config.virtual_hw_min,
+        maxval=self._config.bridge_half_width,
+    )
+
     info = {
         "rng": rng,
         "last_act": jp.zeros(self.mjx_model.nu),
@@ -229,6 +242,8 @@ class BridgeCrossing(go1_base.Go1Env):
         "max_x_reached": qpos[0],
         # Delta passed to _get_reward each step (metres of new ground covered).
         "progress_delta": jp.zeros(()),
+        # Per-episode virtual bridge width for foothold shaping.
+        "virtual_hw": virtual_hw,
     }
 
     metrics = {}
@@ -251,6 +266,8 @@ class BridgeCrossing(go1_base.Go1Env):
     metrics["metric/abduction_saturation"] = jp.zeros(())
     # Max |foot_y| across all feet per step. Div by ep_len = avg worst-case lateral.
     metrics["metric/max_foot_y"] = jp.zeros(())
+    # Virtual bridge width used this episode (constant within episode).
+    metrics["metric/virtual_hw"] = jp.zeros(())
 
     obs = self._get_obs(data, info)
     reward, done = jp.zeros(2)
@@ -298,6 +315,10 @@ class BridgeCrossing(go1_base.Go1Env):
         jp.clip(sum(rewards.values()) * self.dt, -10.0, 10000.0), nan=0.0
     )
 
+    # Snapshot air_time BEFORE zeroing — first_contact feet are in contact this
+    # step, so their air_time would be wiped if we read after the reset below.
+    air_time_at_td = (state.info["feet_air_time"] * first_contact).sum()
+
     state.info["last_last_act"] = state.info["last_act"]
     state.info["last_act"] = action
     state.info["feet_air_time"] *= ~contact
@@ -309,15 +330,14 @@ class BridgeCrossing(go1_base.Go1Env):
     state.metrics["metric/max_x_reached"] = state.info["max_x_reached"]
     state.metrics["metric/x_vel"] = self.get_local_linvel(data)[0]
     state.metrics["metric/touchdown_count"] = first_contact.sum().astype(jp.float32)
-    state.metrics["metric/air_time_sum_at_td"] = (
-        state.info["feet_air_time"] * first_contact
-    ).sum()
+    state.metrics["metric/air_time_sum_at_td"] = air_time_at_td
     state.metrics["metric/term_fall"] = failure.astype(jp.float32)
     state.metrics["metric/term_success"] = success.astype(jp.float32)
     state.metrics["metric/abduction_saturation"] = jp.mean(
         (jp.abs(action[0::3]) > 0.95).astype(jp.float32)
     )
     state.metrics["metric/max_foot_y"] = jp.max(jp.abs(foot_y))
+    state.metrics["metric/virtual_hw"] = state.info["virtual_hw"]
 
     done = done.astype(reward.dtype)
     return state.replace(data=data, obs=obs, reward=reward, done=done)
@@ -406,7 +426,7 @@ class BridgeCrossing(go1_base.Go1Env):
         jp.array([x_progress]),                   # 1
         noisy_foot_y,                             # 4 — PUMA foothold prior
         jp.array([data.qpos[1]]),                 # 1 — trunk y (lateral drift)
-        jp.array([self._config.bridge_half_width / 0.4]),  # 1 — bridge width normalised
+        jp.array([info["virtual_hw"] / 0.4]),              # 1 — virtual bridge width normalised
     ])  # total: 52 = _PROPRIO_SIZE
 
     if self._config.history_len > 1:
@@ -450,12 +470,12 @@ class BridgeCrossing(go1_base.Go1Env):
       first_contact: jax.Array,
       contact: jax.Array,
   ) -> dict[str, jax.Array]:
-    # Foothold quality: how well-centred feet are within bridge half-width.
-    # Used as a multiplier on frontier_delta so foothold income requires
-    # forward progress — no standalone income stream to exploit.
+    # Foothold quality against the per-episode virtual_hw.
+    # Gradient zone = min(virtual_hw, 10cm) so a centred foot always scores 1.0
+    # regardless of width, and every checkpoint handoff is reward-scale neutral.
     foot_y = data.site_xpos[self._feet_site_id, 1]
-    margin = self._config.bridge_half_width - jp.abs(foot_y)
-    quality = jp.clip(margin / 0.10, 0.0, 1.0)
+    margin = info["virtual_hw"] - jp.abs(foot_y)
+    quality = jp.clip(margin / jp.minimum(info["virtual_hw"], 0.10), 0.0, 1.0)
     foothold_multiplier = 0.5 + 0.5 * jp.mean(quality)  # [0.5, 1.0]
 
     return {
@@ -497,9 +517,9 @@ class BridgeCrossing(go1_base.Go1Env):
     return jp.square(y_pos)
 
   def _cost_heading(self, forward_vec: jax.Array) -> jax.Array:
-    # Penalise the y-component of the robot's forward vector.
-    # Zero when facing +x, maximum (1.0) when facing sideways (±y).
-    return jp.square(forward_vec[1])
+    # 0 when facing +x, 2 when facing -x. Distinguishes forward from backward,
+    # unlike the old square(y) which was symmetric about ±x.
+    return 1.0 - jp.clip(forward_vec[0], -1.0, 1.0)
 
   def _cost_orientation(self, upvector: jax.Array) -> jax.Array:
     return jp.sum(jp.square(upvector[:2]))
