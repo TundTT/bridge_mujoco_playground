@@ -72,7 +72,7 @@ def default_config() -> config_dict.ConfigDict:
       reward_config=config_dict.create(
           scales=config_dict.create(
               orientation=-5.0,
-              alive=0.0,
+              alive=-2.0,
               torques=-0.0002,
               action_rate=-0.01,
               energy=-0.001,
@@ -87,9 +87,9 @@ def default_config() -> config_dict.ConfigDict:
               heading=-2.0,
               foot_off_bridge=-5.0,
               foot_lateral_deviation=-1.0,
-              # Edge-margin foothold: full reward once foot is 5cm inside edge.
-              # No centreline attractor → no triangle stance.
-              foothold_dense=1.0,
+              # Edge-margin foothold: gated on touchdown events only.
+              # Scale ×4 compensates for ~4× fewer events vs per-timestep.
+              foothold_dense=4.0,
               foothold_sparse=1.0,
           ),
       ),
@@ -469,9 +469,9 @@ class BridgeCrossing(go1_base.Go1Env):
         ),
         "foot_off_bridge": self._cost_foot_off_bridge(data, first_contact),
         "foot_lateral_deviation": self._cost_foot_lateral_deviation(data),
-        # Edge-margin foothold: guides feet inside bridge without centreline pull.
-        "foothold_dense": self._reward_foothold_dense(data, contact),
-        "foothold_sparse": self._reward_foothold_sparse(data),
+        # Touchdown-gated foothold: only fires on first_contact events.
+        "foothold_dense": self._reward_foothold_dense(data, first_contact),
+        "foothold_sparse": self._reward_foothold_sparse(data, first_contact),
     }
 
   def _reward_forward_vel(self, local_vel: jax.Array) -> jax.Array:
@@ -547,28 +547,31 @@ class BridgeCrossing(go1_base.Go1Env):
     return jp.sum(jp.square(excess))
 
   def _reward_foothold_dense(
-      self, data: mjx.Data, contact: jax.Array
+      self, data: mjx.Data, first_contact: jax.Array
   ) -> jax.Array:
-    """Edge-margin foothold reward: saturates at 5cm inside bridge edge.
+    """Edge-margin foothold reward, gated on touchdown events only.
 
-    Gives full reward (1.0) once a foot has ≥5 cm of clearance from the edge.
-    Airborne feet are treated as fully rewarded (neutral).
-    No centreline attractor — no triangle stance.
+    Fires only when a foot first touches down (first_contact=True for that foot).
+    Wider gradient zone (10cm) and summed (not averaged) so standing still on
+    Platform A earns nothing — no continuous income stream.
     """
     foot_y = data.site_xpos[self._feet_site_id, 1]  # (4,) FR, FL, RR, RL
     margin = self._config.bridge_half_width - jp.abs(foot_y)
-    per_foot = jp.clip(margin / 0.05, 0.0, 1.0)
-    return jp.mean(jp.where(contact, per_foot, jp.ones(4)))
+    per_foot = jp.clip(margin / 0.10, 0.0, 1.0)
+    return jp.sum(jp.where(first_contact, per_foot, jp.zeros(4)))
 
-  def _reward_foothold_sparse(self, data: mjx.Data) -> jax.Array:
-    """Sparse PUMA-style foothold reward: 1 when all 4 feet are within bridge.
+  def _reward_foothold_sparse(
+      self, data: mjx.Data, first_contact: jax.Array
+  ) -> jax.Array:
+    """Sparse foothold bonus, gated on touchdown events.
 
-    Gives a binary bonus only when every foot is simultaneously within the
-    bridge half-width, analogous to PUMA's simultaneous dual-foot landing bonus.
+    Only fires when at least one foot just landed AND all feet are within
+    the bridge half-width — no continuous income from standing still.
     """
     foot_y = data.site_xpos[self._feet_site_id, 1]  # (4,) FR, FL, RR, RL
     all_on_bridge = jp.all(jp.abs(foot_y) < self._config.bridge_half_width)
-    return all_on_bridge.astype(jp.float32)
+    any_touchdown = jp.any(first_contact)
+    return all_on_bridge.astype(jp.float32) * any_touchdown.astype(jp.float32)
 
   def _cost_backward_vel(self, local_vel: jax.Array) -> jax.Array:
     """Penalise backward (-x) velocity to deter back-and-forth oscillation.

@@ -1,12 +1,14 @@
 #!/bin/bash
-# v2 curriculum: fresh start, 0.5m → 0.45m → 0.4m → 0.35m → 0.3m → 0.25m → 0.2m → 0.15m → 0.1m
+# v2b curriculum: touchdown-gated foothold rewards, alive time tax
+# Stages: 0.5m → 0.45m → 0.4m → 0.35m → 0.325m → 0.3m → 0.25m → 0.2m → 0.15m → 0.1m
 #
-# Key reward changes vs v1:
-#   - frontier_delta replaces progress_to_goal (zero when loitering/retreating)
-#   - foothold_dense = edge-margin (no centreline attractor, no triangle stance)
-#   - forward_vel removed (frontier_delta subsumes it)
-#   - discounting=0.997, entropy_cost=0.02 (success bonus visible, more exploration)
-#   - episode_length=1000 (20s — enough once loitering is unprofitable)
+# Key reward changes vs v2:
+#   - alive=-2.0 (time tax: standing still is now net-negative)
+#   - foothold_dense gated on first_contact (no per-timestep income from standing)
+#   - foothold_sparse gated on first_contact (same reason)
+#   - foothold_dense gradient widened from 5cm to 10cm (smoother learning signal)
+#   - foothold_dense scale 1.0→4.0 (compensates for ~4× fewer touchdown events)
+#   - added 0.325m stage between 0.35m and 0.3m (finer curriculum steps)
 #
 # Usage:
 #   ./run_curriculum_v2.sh                              # fresh run from stage 1
@@ -18,7 +20,7 @@ cd /home/tund/notebooks/bridge_mujoco_playground
 source .venv/bin/activate
 
 WANDB_PROJECT="bridge_crossing_v2"
-WANDB_GROUP="${WANDB_GROUP:-v2_frontier_delta}"
+WANDB_GROUP="${WANDB_GROUP:-v2b_touchdown_foothold}"
 SKIP_TO_STAGE="${SKIP_TO_STAGE:-1}"
 INIT_CKPT="${INIT_CKPT:-}"
 
@@ -85,29 +87,34 @@ if [ "${SKIP_TO_STAGE}" -le 4 ]; then
   CKPT=$(run_stage 4 0.175 "0.35m" "${CKPT}")
 fi
 
-# ── Stage 5: 0.3m (half_width=0.15) ──────────────────────────────────────────
+# ── Stage 5: 0.325m (half_width=0.1625) ──────────────────────────────────────
 if [ "${SKIP_TO_STAGE}" -le 5 ]; then
-  CKPT=$(run_stage 5 0.15 "0.3m" "${CKPT}")
+  CKPT=$(run_stage 5 0.1625 "0.325m" "${CKPT}")
 fi
 
-# ── Stage 6: 0.25m (half_width=0.125) ────────────────────────────────────────
+# ── Stage 6: 0.3m (half_width=0.15) ──────────────────────────────────────────
 if [ "${SKIP_TO_STAGE}" -le 6 ]; then
-  CKPT=$(run_stage 6 0.125 "0.25m" "${CKPT}")
+  CKPT=$(run_stage 6 0.15 "0.3m" "${CKPT}")
 fi
 
-# ── Stage 7: 0.2m (half_width=0.10) ──────────────────────────────────────────
+# ── Stage 7: 0.25m (half_width=0.125) ────────────────────────────────────────
 if [ "${SKIP_TO_STAGE}" -le 7 ]; then
-  CKPT=$(run_stage 7 0.10 "0.2m" "${CKPT}")
+  CKPT=$(run_stage 7 0.125 "0.25m" "${CKPT}")
 fi
 
-# ── Stage 8: 0.15m (half_width=0.075) ────────────────────────────────────────
+# ── Stage 8: 0.2m (half_width=0.10) ──────────────────────────────────────────
 if [ "${SKIP_TO_STAGE}" -le 8 ]; then
-  CKPT=$(run_stage 8 0.075 "0.15m" "${CKPT}")
+  CKPT=$(run_stage 8 0.10 "0.2m" "${CKPT}")
 fi
 
-# ── Stage 9: 0.1m (half_width=0.05) ──────────────────────────────────────────
+# ── Stage 9: 0.15m (half_width=0.075) ────────────────────────────────────────
 if [ "${SKIP_TO_STAGE}" -le 9 ]; then
-  CKPT=$(run_stage 9 0.05 "0.1m" "${CKPT}")
+  CKPT=$(run_stage 9 0.075 "0.15m" "${CKPT}")
 fi
 
-echo "=== All stages complete. Final checkpoint: ${CKPT} ===" >&2
+# ── Stage 10: 0.1m (half_width=0.05) ─────────────────────────────────────────
+if [ "${SKIP_TO_STAGE}" -le 10 ]; then
+  CKPT=$(run_stage 10 0.05 "0.1m" "${CKPT}")
+fi
+
+echo "=== All 10 stages complete. Final checkpoint: ${CKPT} ===" >&2
