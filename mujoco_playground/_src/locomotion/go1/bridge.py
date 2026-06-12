@@ -79,27 +79,25 @@ def default_config() -> config_dict.ConfigDict:
               orientation=-5.0,
               alive=0.0,
               torques=-0.0002,
-              # First-order action smoothness — scale relative to frontier income.
-              action_rate=-0.05,
-              # Second-order action smoothness (jitter penalty).
-              action_accel=-0.02,
+              action_rate=-0.01,
+              action_accel=-0.005,
               # Joint acceleration penalty (rad/s²)² — joints only, not base DOFs.
               dof_acc=-2.5e-8,
               energy=-0.001,
-              termination=-100.0,
+              termination=-200.0,
               success=5000.0,
               # Frontier progress: (delta_max_x / dt) × foothold_quality.
               # Monotone — standing earns zero, only new x territory pays.
-              frontier_delta=20.0,
+              frontier_delta=50.0,
               # Air-time reward capped at 0.25s (raised from 0.15s so healthy
               # trot swings earn positively; jitter <0.1s still pays a penalty).
               feet_air_time=2.0,
               lateral_deviation=-3.0,
               heading=-2.0,
               foot_off_bridge=-50.0,
-              lin_vel_z=-1.0,
+              lin_vel_z=-2.0,
               ang_vel_xy=-0.1,
-              feet_slip=-1.0,
+              feet_slip=-0.25,
               feet_clearance=-2.0,
               feet_height=-0.2,
               pose=0.5,
