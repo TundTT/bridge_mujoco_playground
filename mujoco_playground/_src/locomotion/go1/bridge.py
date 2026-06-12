@@ -33,8 +33,8 @@ _HM_Y_MIN, _HM_Y_MAX = -1.0, 1.0
 _HM_CELL = 0.03
 _HM_PATCH = 13
 
-# linvel(3)+gyro(3)+gravity(3)+joint_angles(12)+joint_vel(12)+last_act(12)+x_progress(1)+foot_y(4)
-_PROPRIO_SIZE = 50
+# linvel(3)+gyro(3)+gravity(3)+joint_angles(12)+joint_vel(12)+last_act(12)+x_progress(1)+foot_y(4)+trunk_y(1)+bridge_hw(1)
+_PROPRIO_SIZE = 52
 
 
 def default_config() -> config_dict.ConfigDict:
@@ -45,7 +45,7 @@ def default_config() -> config_dict.ConfigDict:
       Kp=35.0,
       Kd=0.5,
       action_repeat=1,
-      action_scale=0.3,
+      action_scale=0.5,
       history_len=3,
       soft_joint_pos_limit_factor=0.95,
       # Curriculum: bridge y half-extent in metres (0.4 = 0.8 m wide).
@@ -72,25 +72,21 @@ def default_config() -> config_dict.ConfigDict:
       reward_config=config_dict.create(
           scales=config_dict.create(
               orientation=-5.0,
-              alive=-2.0,
+              alive=0.0,
               torques=-0.0002,
               action_rate=-0.01,
               energy=-0.001,
               termination=-1.0,
               success=5000.0,
               feet_air_time=0.0,
-              # Frontier delta: rewards metres of NEW ground covered per step.
-              # Scale must dominate alive+foothold standing income so crossing
-              # beats loitering: 7m * 50 = 350 >> foothold(20) + alive(0).
+              # Frontier delta × foothold quality multiplier (0.5..1.0).
+              # Foothold quality is baked in as a multiplier — zero progress
+              # means zero foothold income by construction. No separate
+              # foothold terms → no gating exploit possible.
               frontier_delta=50.0,
               lateral_deviation=-3.0,
               heading=-2.0,
               foot_off_bridge=-5.0,
-              foot_lateral_deviation=-1.0,
-              # Edge-margin foothold: gated on touchdown events only.
-              # Scale ×4 compensates for ~4× fewer events vs per-timestep.
-              foothold_dense=4.0,
-              foothold_sparse=1.0,
           ),
       ),
       impl="jax",
@@ -238,19 +234,23 @@ class BridgeCrossing(go1_base.Go1Env):
     metrics = {}
     for k in self._config.reward_config.scales.keys():
       metrics[f"reward/{k}"] = jp.zeros(())
-    # Oscillation detection: episode sum of sign(x_vel). Near 0 → oscillating;
-    # near +episode_length → always forward; plotted in WandB as metric/x_direction.
-    metrics["metric/x_direction"] = jp.zeros(())
-    # Foot lateral position diagnostics (signed y, world frame).
-    # FR=0, FL=1, RR=2, RL=3. Episode sums → divide by ep_len for mean.
-    metrics["metric/y_FR"] = jp.zeros(())
-    metrics["metric/y_FL"] = jp.zeros(())
-    metrics["metric/y_RR"] = jp.zeros(())
-    metrics["metric/y_RL"] = jp.zeros(())
-    # Front-foot lateral span: |y_FL - y_FR|. Near 0 → triangle stance.
-    metrics["metric/front_foot_spread"] = jp.zeros(())
-    # Mean forward velocity per step.
+    # Furthest x reached this episode (monotone). Sum/ep_len ≈ average frontier.
+    metrics["metric/max_x_reached"] = jp.zeros(())
+    # Forward velocity per step (useful alongside max_x_reached).
     metrics["metric/x_vel"] = jp.zeros(())
+    # Touchdown count: episode sum = total first_contact events.
+    # Normal trot ~100-150/ep; foot-tapping exploit ~500-1500/ep.
+    metrics["metric/touchdown_count"] = jp.zeros(())
+    # Air time accumulated at touchdown events. Divide by touchdown_count for mean.
+    metrics["metric/air_time_sum_at_td"] = jp.zeros(())
+    # Termination type: sum=1 if episode ended in fall, 0 if success or timeout.
+    metrics["metric/term_fall"] = jp.zeros(())
+    # Sum=1 if episode ended in success, 0 if fell or timed out.
+    metrics["metric/term_success"] = jp.zeros(())
+    # Fraction of steps where any abduction joint |action| > 0.95 (saturation proxy).
+    metrics["metric/abduction_saturation"] = jp.zeros(())
+    # Max |foot_y| across all feet per step. Div by ep_len = avg worst-case lateral.
+    metrics["metric/max_foot_y"] = jp.zeros(())
 
     obs = self._get_obs(data, info)
     reward, done = jp.zeros(2)
@@ -305,25 +305,25 @@ class BridgeCrossing(go1_base.Go1Env):
     state.info["swing_peak"] *= ~contact
     for k, v in rewards.items():
       state.metrics[f"reward/{k}"] = v
-    # Oscillation detector: +1 when moving forward, -1 backward. Episode sum
-    # near 0 means the robot is oscillating; near +episode_length means pure
-    # forward motion. Visible in WandB under eval/.../metric/x_direction.
-    state.metrics["metric/x_direction"] = jp.sign(
-        self.get_local_linvel(data)[0]
-    )
-    foot_y = data.site_xpos[self._feet_site_id, 1]  # FR, FL, RR, RL
-    state.metrics["metric/y_FR"] = foot_y[0]
-    state.metrics["metric/y_FL"] = foot_y[1]
-    state.metrics["metric/y_RR"] = foot_y[2]
-    state.metrics["metric/y_RL"] = foot_y[3]
-    state.metrics["metric/front_foot_spread"] = jp.abs(foot_y[1] - foot_y[0])
+    foot_y = data.site_xpos[self._feet_site_id, 1]
+    state.metrics["metric/max_x_reached"] = state.info["max_x_reached"]
     state.metrics["metric/x_vel"] = self.get_local_linvel(data)[0]
+    state.metrics["metric/touchdown_count"] = first_contact.sum().astype(jp.float32)
+    state.metrics["metric/air_time_sum_at_td"] = (
+        state.info["feet_air_time"] * first_contact
+    ).sum()
+    state.metrics["metric/term_fall"] = failure.astype(jp.float32)
+    state.metrics["metric/term_success"] = success.astype(jp.float32)
+    state.metrics["metric/abduction_saturation"] = jp.mean(
+        (jp.abs(action[0::3]) > 0.95).astype(jp.float32)
+    )
+    state.metrics["metric/max_foot_y"] = jp.max(jp.abs(foot_y))
 
     done = done.astype(reward.dtype)
     return state.replace(data=data, obs=obs, reward=reward, done=done)
 
   def _get_failure(self, data: mjx.Data) -> jax.Array:
-    tilt = self.get_upvector(data)[-1] < 0.0
+    tilt = self.get_upvector(data)[-1] < 0.5  # terminate at ~60° tilt
     height = data.qpos[2] < self._config.fall_threshold
     return tilt | height
 
@@ -405,7 +405,9 @@ class BridgeCrossing(go1_base.Go1Env):
         info["last_act"],                         # 12
         jp.array([x_progress]),                   # 1
         noisy_foot_y,                             # 4 — PUMA foothold prior
-    ])  # total: 50 = _PROPRIO_SIZE
+        jp.array([data.qpos[1]]),                 # 1 — trunk y (lateral drift)
+        jp.array([self._config.bridge_half_width / 0.4]),  # 1 — bridge width normalised
+    ])  # total: 52 = _PROPRIO_SIZE
 
     if self._config.history_len > 1:
       state = jp.hstack([
@@ -448,6 +450,14 @@ class BridgeCrossing(go1_base.Go1Env):
       first_contact: jax.Array,
       contact: jax.Array,
   ) -> dict[str, jax.Array]:
+    # Foothold quality: how well-centred feet are within bridge half-width.
+    # Used as a multiplier on frontier_delta so foothold income requires
+    # forward progress — no standalone income stream to exploit.
+    foot_y = data.site_xpos[self._feet_site_id, 1]
+    margin = self._config.bridge_half_width - jp.abs(foot_y)
+    quality = jp.clip(margin / 0.10, 0.0, 1.0)
+    foothold_multiplier = 0.5 + 0.5 * jp.mean(quality)  # [0.5, 1.0]
+
     return {
         "orientation": self._cost_orientation(self.get_upvector(data)),
         "alive": jp.ones(()),
@@ -458,8 +468,9 @@ class BridgeCrossing(go1_base.Go1Env):
         "energy": self._cost_energy(data.qvel[6:], data.actuator_force),
         "termination": self._cost_termination(failure),
         "success": self._reward_success(success),
-        # Frontier delta: m/s of new ground — zero when loitering or retreating.
-        "frontier_delta": info["progress_delta"] / self.dt,
+        # Frontier delta × foothold quality: well-placed feet earn up to 1×
+        # per metre; poorly-placed feet earn 0.5×. Zero progress = zero income.
+        "frontier_delta": (info["progress_delta"] / self.dt) * foothold_multiplier,
         "lateral_deviation": self._cost_lateral_deviation(data.qpos[1]),
         "heading": self._cost_heading(
             data.site_xmat[self._imu_site_id] @ jp.array([1.0, 0.0, 0.0])
@@ -468,10 +479,6 @@ class BridgeCrossing(go1_base.Go1Env):
             info["feet_air_time"], first_contact
         ),
         "foot_off_bridge": self._cost_foot_off_bridge(data, first_contact),
-        "foot_lateral_deviation": self._cost_foot_lateral_deviation(data),
-        # Touchdown-gated foothold: only fires on first_contact events.
-        "foothold_dense": self._reward_foothold_dense(data, first_contact),
-        "foothold_sparse": self._reward_foothold_sparse(data, first_contact),
     }
 
   def _reward_forward_vel(self, local_vel: jax.Array) -> jax.Array:
@@ -537,41 +544,6 @@ class BridgeCrossing(go1_base.Go1Env):
     )
     on_surface = self._world_heightmap[xi, yi]  # (4,) binary
     return jp.sum(first_contact * (1.0 - on_surface))
-
-  def _cost_foot_lateral_deviation(self, data: mjx.Data) -> jax.Array:
-    foot_y = data.site_xpos[self._feet_site_id, 1]  # (4,) world-frame y
-    # Only penalise feet that overhang the bridge edge — zero cost for a normal
-    # wide stance on a wide bridge, bites progressively as the bridge narrows.
-    threshold = jp.maximum(self._config.bridge_half_width - 0.02, 0.0)
-    excess = jp.maximum(0.0, jp.abs(foot_y) - threshold)
-    return jp.sum(jp.square(excess))
-
-  def _reward_foothold_dense(
-      self, data: mjx.Data, first_contact: jax.Array
-  ) -> jax.Array:
-    """Edge-margin foothold reward, gated on touchdown events only.
-
-    Fires only when a foot first touches down (first_contact=True for that foot).
-    Wider gradient zone (10cm) and summed (not averaged) so standing still on
-    Platform A earns nothing — no continuous income stream.
-    """
-    foot_y = data.site_xpos[self._feet_site_id, 1]  # (4,) FR, FL, RR, RL
-    margin = self._config.bridge_half_width - jp.abs(foot_y)
-    per_foot = jp.clip(margin / 0.10, 0.0, 1.0)
-    return jp.sum(jp.where(first_contact, per_foot, jp.zeros(4)))
-
-  def _reward_foothold_sparse(
-      self, data: mjx.Data, first_contact: jax.Array
-  ) -> jax.Array:
-    """Sparse foothold bonus, gated on touchdown events.
-
-    Only fires when at least one foot just landed AND all feet are within
-    the bridge half-width — no continuous income from standing still.
-    """
-    foot_y = data.site_xpos[self._feet_site_id, 1]  # (4,) FR, FL, RR, RL
-    all_on_bridge = jp.all(jp.abs(foot_y) < self._config.bridge_half_width)
-    any_touchdown = jp.any(first_contact)
-    return all_on_bridge.astype(jp.float32) * any_touchdown.astype(jp.float32)
 
   def _cost_backward_vel(self, local_vel: jax.Array) -> jax.Array:
     """Penalise backward (-x) velocity to deter back-and-forth oscillation.

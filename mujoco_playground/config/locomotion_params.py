@@ -152,7 +152,7 @@ def brax_ppo_config(
     rl_config.num_timesteps = 100_000_000
     rl_config.num_evals = 10
     rl_config.discounting = 0.997
-    rl_config.entropy_cost = 0.02
+    rl_config.entropy_cost = 0.005
     rl_config.num_envs = 4096
     rl_config.batch_size = 2048
     rl_config.num_minibatches = 32
