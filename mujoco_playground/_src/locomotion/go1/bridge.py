@@ -32,6 +32,8 @@ _HM_X_MIN, _HM_X_MAX = -3.0, 7.0
 _HM_Y_MIN, _HM_Y_MAX = -1.0, 1.0
 _HM_CELL = 0.03
 _HM_PATCH = 13
+# Platform and bridge surface z (used to convert absolute foot z to relative clearance).
+_TERRAIN_Z = 0.5
 
 # linvel(3)+gyro(3)+gravity(3)+joint_angles(12)+joint_vel(12)+last_act(12)+x_progress(1)+foot_y(4)+trunk_y(1)+bridge_hw(1)
 _PROPRIO_SIZE = 52
@@ -279,6 +281,8 @@ class BridgeCrossing(go1_base.Go1Env):
     metrics["metric/max_foot_y"] = jp.zeros(())
     # Virtual bridge width used this episode (constant within episode).
     metrics["metric/virtual_hw"] = jp.zeros(())
+    # Mean swing peak relative to deck (healthy trot ~0.08m; hopping if >0.15m).
+    metrics["metric/swing_peak"] = jp.zeros(())
 
     obs = self._get_obs(data, info)
     reward, done = jp.zeros(2)
@@ -290,6 +294,10 @@ class BridgeCrossing(go1_base.Go1Env):
         self.mjx_model, state.data, motor_targets, self.n_substeps
     )
 
+    # Detect EpisodeWrapper timeout: AutoReset teleports the robot back to spawn,
+    # so x drops by >0.5m in one ctrl step — impossible under normal physics.
+    teleported = state.data.qpos[0] > data.qpos[0] + 0.5
+
     # True if any terrain surface is under that foot.
     contact = jp.any(
         data.sensordata[self._feet_terrain_sensor_adrs] > 0, axis=-1
@@ -298,7 +306,8 @@ class BridgeCrossing(go1_base.Go1Env):
     first_contact = (state.info["feet_air_time"] > 0.0) * contact_filt
     state.info["feet_air_time"] += self.dt
 
-    p_fz = data.site_xpos[self._feet_site_id, -1]
+    # Track swing peak relative to deck surface so feet_height/clearance work correctly.
+    p_fz = data.site_xpos[self._feet_site_id, -1] - _TERRAIN_Z
     state.info["swing_peak"] = jp.maximum(state.info["swing_peak"], p_fz)
 
     obs = self._get_obs(data, state.info)
@@ -356,10 +365,12 @@ class BridgeCrossing(go1_base.Go1Env):
     )
     state.metrics["metric/max_foot_y"] = jp.max(jp.abs(foot_y))
     state.metrics["metric/virtual_hw"] = state.info["virtual_hw"]
+    state.metrics["metric/swing_peak"] = jp.mean(state.info["swing_peak"])
 
     # ── Episode-boundary resets (fix BraxAutoResetWrapper info leak) ──────────
-    # BraxAutoResetWrapper only resets data+obs, not info. We manually zero all
-    # per-episode accumulators so the next episode starts clean.
+    # `done` catches failure/success. `teleported` catches EpisodeWrapper timeouts
+    # (AutoReset restores spawn data/obs but not info, so we must clean up both).
+    boundary = done | teleported
     state.info["rng"], key = jax.random.split(state.info["rng"])
     vhw_min = min(self._config.virtual_hw_min, self._config.bridge_half_width)
     new_vhw = jax.random.uniform(
@@ -367,30 +378,30 @@ class BridgeCrossing(go1_base.Go1Env):
         minval=vhw_min,
         maxval=self._config.bridge_half_width,
     )
-    state.info["virtual_hw"] = jp.where(done, new_vhw, state.info["virtual_hw"])
+    state.info["virtual_hw"] = jp.where(boundary, new_vhw, state.info["virtual_hw"])
     state.info["max_x_reached"] = jp.where(
-        done, state.info["init_x"], state.info["max_x_reached"]
+        boundary, state.info["init_x"], state.info["max_x_reached"]
     )
     state.info["unpaid_progress"] = jp.where(
-        done, jp.zeros(()), state.info["unpaid_progress"]
+        boundary, jp.zeros(()), state.info["unpaid_progress"]
     )
     state.info["feet_air_time"] = jp.where(
-        done, jp.zeros(4), state.info["feet_air_time"]
+        boundary, jp.zeros(4), state.info["feet_air_time"]
     )
     state.info["last_contact"] = jp.where(
-        done, jp.zeros(4, dtype=bool), state.info["last_contact"]
+        boundary, jp.zeros(4, dtype=bool), state.info["last_contact"]
     )
     state.info["swing_peak"] = jp.where(
-        done, jp.zeros(4), state.info["swing_peak"]
+        boundary, jp.zeros(4), state.info["swing_peak"]
     )
     state.info["last_act"] = jp.where(
-        done, jp.zeros_like(state.info["last_act"]), state.info["last_act"]
+        boundary, jp.zeros_like(state.info["last_act"]), state.info["last_act"]
     )
     state.info["last_last_act"] = jp.where(
-        done, jp.zeros_like(state.info["last_last_act"]), state.info["last_last_act"]
+        boundary, jp.zeros_like(state.info["last_last_act"]), state.info["last_last_act"]
     )
     state.info["obs_history"] = jp.where(
-        done, jp.zeros_like(state.info["obs_history"]), state.info["obs_history"]
+        boundary, jp.zeros_like(state.info["obs_history"]), state.info["obs_history"]
     )
 
     done = done.astype(reward.dtype)
@@ -637,7 +648,8 @@ class BridgeCrossing(go1_base.Go1Env):
     feet_vel = data.sensordata[self._foot_linvel_sensor_adr]
     vel_xy = feet_vel[..., :2]
     vel_norm = jp.sqrt(jp.linalg.norm(vel_xy, axis=-1))
-    foot_z = data.site_xpos[self._feet_site_id, 2]
+    # Subtract deck z so clearance is relative to terrain surface, not world origin.
+    foot_z = data.site_xpos[self._feet_site_id, 2] - _TERRAIN_Z
     delta = jp.abs(foot_z - self._config.reward_config.max_foot_height)
     return jp.sum(delta * vel_norm)
 
