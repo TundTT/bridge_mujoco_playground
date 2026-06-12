@@ -70,9 +70,6 @@ def default_config() -> config_dict.ConfigDict:
               foot_y=0.005,
           ),
       ),
-      # PUMA foothold prior: noise added to ground-truth foot y observations to
-      # simulate real-world estimation error. 0.0 = perfect oracle signal.
-      foothold_prior_noise_std=0.0,
       reward_config=config_dict.create(
           scales=config_dict.create(
               orientation=-5.0,
@@ -431,12 +428,12 @@ class BridgeCrossing(go1_base.Go1Env):
 
     if self._config.history_len > 1:
       state = jp.hstack([
-          proprio,                                # 46
+          proprio,                                # 52
           local_heightmap,                        # 169
-          info["obs_history"].ravel(),            # (history_len-1) * 46
+          info["obs_history"].ravel(),            # (history_len-1) * 52
       ])
     else:
-      state = jp.hstack([proprio, local_heightmap])  # 215
+      state = jp.hstack([proprio, local_heightmap])  # 221
 
     accelerometer = self.get_accelerometer(data)
     angvel = self.get_global_angvel(data)

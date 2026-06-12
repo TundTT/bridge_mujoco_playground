@@ -25,6 +25,7 @@ WANDB_GROUP="${WANDB_GROUP:-v3_virtual_width}"
 SKIP_TO_STAGE="${SKIP_TO_STAGE:-0}"
 INIT_CKPT="${INIT_CKPT:-}"
 LAST_GOOD_CKPT="${INIT_CKPT:-}"
+LAST_GOOD_HW="0.40"  # tracks physical hw of the last gate-passing stage
 
 get_latest_ckpt() {
   ls -d "$1/checkpoints"/[0-9]* 2>/dev/null | sort -V | tail -1
@@ -34,10 +35,12 @@ get_logdir() {
   grep "Logs are being stored in:" "$1" | awk '{print $NF}'
 }
 
-# Returns final term_success (0.0-1.0) from the stage log.
+# Returns final term_success (0.0-1.0) from the stage log; defaults to 0.
 get_success_rate() {
   local logfile="$1"
-  grep "metric/term_success:" "$logfile" | tail -1 | awk '{print $2}' || echo "0"
+  local rate
+  rate=$(grep "metric/term_success:" "$logfile" 2>/dev/null | tail -1 | awk '{print $2}')
+  echo "${rate:-0}"
 }
 
 run_stage() {
@@ -63,12 +66,8 @@ run_stage() {
     --use_wandb \
     ${extra_flags} \
     2>&1 | tee "${logfile}" >/dev/null
-
-  local exit_code=${PIPESTATUS[0]}
-  if [ $exit_code -ne 0 ]; then
-    echo "Stage ${stage} failed (exit $exit_code)" >&2
-    exit $exit_code
-  fi
+  # set -e exits the script on non-zero pipeline exit automatically;
+  # no need for PIPESTATUS check here.
 
   local logdir
   logdir=$(get_logdir "${logfile}")
@@ -109,11 +108,13 @@ gate_advance() {
     echo "Stage ${stage} passed (${rate} ≥ 0.70). Advancing." >&2
     CKPT="$ckpt"
     LAST_GOOD_CKPT="$ckpt"
+    LAST_GOOD_HW="$hw"
   elif [ "$marginal" -eq 1 ]; then
     echo "Stage ${stage} marginal (${rate} in [0.30, 0.70)). Extending +100M from same checkpoint." >&2
     local ext_steps=100000000
+    local ext_num=1
     for _ in $(seq 1 $max_extensions); do
-      result=$(run_stage "${stage}ext" "${hw}" "${vhw_min}" "${width_str}_ext" "${ext_steps}" "$ckpt" "${extra_flags}")
+      result=$(run_stage "${stage}ext${ext_num}" "${hw}" "${vhw_min}" "${width_str}_ext${ext_num}" "${ext_steps}" "$ckpt" "${extra_flags}")
       rate=$(echo "$result" | awk '{print $1}')
       ckpt=$(echo "$result" | awk '{print $2}')
       pass=$(awk "BEGIN{print (${rate} >= 0.70) ? 1 : 0}")
@@ -121,19 +122,21 @@ gate_advance() {
         echo "Stage ${stage} passed after extension (${rate})." >&2
         CKPT="$ckpt"
         LAST_GOOD_CKPT="$ckpt"
+        LAST_GOOD_HW="$hw"
         return 0
       fi
+      ext_num=$((ext_num + 1))
     done
     echo "Stage ${stage} still marginal after extensions. Advancing anyway to avoid loop." >&2
     CKPT="$ckpt"
   else
     echo "Stage ${stage} failed (${rate} < 0.30). Reverting to LAST_GOOD and inserting midpoint." >&2
     CKPT="$LAST_GOOD_CKPT"
-    # Insert midpoint stage automatically
     local mid_hw
-    mid_hw=$(awk "BEGIN{printf \"%.4f\", (${hw} + $(awk "BEGIN{print ${hw} * 1.25}"))/2}" 2>/dev/null || echo "$hw")
-    echo "  Midpoint insertion: hw=${mid_hw} — run manually or re-invoke with SKIP_TO_STAGE=${stage} INIT_CKPT=${LAST_GOOD_CKPT}" >&2
-    echo "  Then continue from stage $((stage + 1)) once midpoint passes." >&2
+    mid_hw=$(awk "BEGIN{printf \"%.4f\", (${hw} + ${LAST_GOOD_HW}) / 2}")
+    echo "  Midpoint insertion: hw=${mid_hw} (between last good ${LAST_GOOD_HW} and failed ${hw})" >&2
+    echo "  Re-invoke: SKIP_TO_STAGE=${stage} INIT_CKPT=${LAST_GOOD_CKPT} bash run_curriculum_v3.sh" >&2
+    echo "  with extra stage: gate_advance ${stage} ${mid_hw} ... inserted before stage ${stage}" >&2
     exit 1
   fi
 }
