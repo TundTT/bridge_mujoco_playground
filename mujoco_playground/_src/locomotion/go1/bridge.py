@@ -61,8 +61,6 @@ def default_config() -> config_dict.ConfigDict:
       # Terminate with success bonus when robot reaches this x (halfway into Platform B).
       # Platform B spans x=4.0 to x=7.0; midpoint is 5.5.
       goal_x=5.5,
-      # Target forward speed for the tracking reward (m/s). Reduce at narrow stages.
-      target_speed=0.5,
       noise_config=config_dict.create(
           level=1.0,
           scales=config_dict.create(
@@ -81,18 +79,18 @@ def default_config() -> config_dict.ConfigDict:
               orientation=-5.0,
               alive=0.0,
               torques=-0.0002,
-              # First-order action smoothness.
-              action_rate=-0.01,
+              # First-order action smoothness — scale relative to frontier income.
+              action_rate=-0.05,
               # Second-order action smoothness (jitter penalty).
-              action_accel=-0.005,
+              action_accel=-0.02,
               # Joint acceleration penalty (rad/s²)² — joints only, not base DOFs.
               dof_acc=-2.5e-8,
               energy=-0.001,
               termination=-100.0,
               success=5000.0,
-              # Velocity tracking: exp(-|v_xy - target|²/0.25) × foothold_quality.
-              # Replaces frontier_delta — concave in velocity so smooth > surge.
-              tracking_lin_vel=2.0,
+              # Frontier progress: (delta_max_x / dt) × foothold_quality.
+              # Monotone — standing earns zero, only new x territory pays.
+              frontier_delta=20.0,
               # Air-time reward capped at 0.25s (raised from 0.15s so healthy
               # trot swings earn positively; jitter <0.1s still pays a penalty).
               feet_air_time=2.0,
@@ -101,7 +99,7 @@ def default_config() -> config_dict.ConfigDict:
               foot_off_bridge=-50.0,
               lin_vel_z=-1.0,
               ang_vel_xy=-0.1,
-              feet_slip=-0.25,
+              feet_slip=-1.0,
               feet_clearance=-2.0,
               feet_height=-0.2,
               pose=0.5,
@@ -256,7 +254,7 @@ class BridgeCrossing(go1_base.Go1Env):
         "last_contact": jp.zeros(4, dtype=bool),
         "swing_peak": jp.zeros(4),
         "obs_history": jp.zeros((self._config.history_len - 1, _PROPRIO_SIZE)),
-        # Frontier tracker: kept as a metric only (no longer drives reward).
+        # Frontier tracker: used by step() to compute delta_x for frontier_delta reward.
         "max_x_reached": qpos[0],
         # Spawn x: used by step() to reset max_x_reached on episode boundary.
         "init_x": qpos[0],
@@ -325,12 +323,15 @@ class BridgeCrossing(go1_base.Go1Env):
     success = self._get_success(data)
     done = failure | success
 
-    # Track furthest x reached (metric only — reward uses velocity tracking).
+    # Compute frontier advance BEFORE updating max_x so delta > 0 when robot
+    # reaches new territory; after the update it would always be zero.
+    frontier_delta = jp.maximum(0.0, data.qpos[0] - state.info["max_x_reached"])
     new_max = jp.maximum(state.info["max_x_reached"], data.qpos[0])
     state.info["max_x_reached"] = new_max
 
     rewards = self._get_reward(
-        data, action, state.info, failure, success, first_contact, contact_filt
+        data, action, state.info, failure, success, first_contact, contact_filt,
+        frontier_delta,
     )
     rewards = {
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
@@ -533,6 +534,7 @@ class BridgeCrossing(go1_base.Go1Env):
       success: jax.Array,
       first_contact: jax.Array,
       contact: jax.Array,
+      frontier_delta: jax.Array,
   ) -> dict[str, jax.Array]:
     # Foothold quality restricted to contacting feet only.
     foot_y = data.site_xpos[self._feet_site_id, 1]
@@ -560,7 +562,7 @@ class BridgeCrossing(go1_base.Go1Env):
         "energy": self._cost_energy(data.qvel[6:], data.actuator_force),
         "termination": self._cost_termination(failure),
         "success": self._reward_success(success),
-        "tracking_lin_vel": self._reward_tracking_lin_vel(data, foothold_multiplier),
+        "frontier_delta": self._reward_frontier_delta(frontier_delta, foothold_multiplier),
         "lateral_deviation": self._cost_lateral_deviation(data.qpos[1]),
         "heading": self._cost_heading(
             data.site_xmat[self._imu_site_id] @ jp.array([1.0, 0.0, 0.0])
@@ -624,13 +626,10 @@ class BridgeCrossing(go1_base.Go1Env):
     # Joints only (qvel[6:]) — base DOFs excluded to avoid taxing touchdown impacts.
     return jp.sum(jp.square((qvel[6:] - last_qvel[6:]) / self.dt))
 
-  def _reward_tracking_lin_vel(
-      self, data: mjx.Data, foothold_multiplier: jax.Array
+  def _reward_frontier_delta(
+      self, frontier_delta: jax.Array, foothold_multiplier: jax.Array
   ) -> jax.Array:
-    local_vel = self.get_local_linvel(data)
-    target = jp.array([self._config.target_speed, 0.0])
-    err = jp.sum(jp.square(target - local_vel[:2]))
-    return jp.exp(-err / 0.25) * foothold_multiplier
+    return frontier_delta / self.dt * foothold_multiplier
 
   def _cost_termination(self, done: jax.Array) -> jax.Array:
     return done
