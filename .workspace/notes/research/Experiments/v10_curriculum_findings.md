@@ -1,4 +1,4 @@
-# v10 Curriculum: Full Target Width Achieved — 0.10m at 91.4%
+# v10 Curriculum: Full Target Width Achieved — 0.10m at 91.4% (need rewrite for lab (assume people reading this have no prior knowlage of the project))
 
 > Run completed 2026-06-13. WandB project: `bridge_crossing_v10`, group: `v10_curriculum`.
 > Script: `run_curriculum_v10.sh`. Status: **all 8 stages complete.**
