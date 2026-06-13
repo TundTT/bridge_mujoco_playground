@@ -547,11 +547,13 @@ class BridgeCrossing(go1_base.Go1Env):
   ) -> dict[str, jax.Array]:
     foot_y = data.site_xpos[self._feet_site_id, 1]
     margin = info["virtual_hw"] - jp.abs(foot_y)
-    # Soft exponential quality: = 1.0 inside virtual_hw, decays smoothly
-    # outside with 5cm length scale. Hard clip-at-0 killed the inboard gradient
-    # once feet were outside virtual_hw — the frontier term gave zero signal
-    # from natural-stance (|y|~0.14) all the way to the virtual edge.
-    quality = jp.exp(jp.minimum(margin, 0.0) / 0.05)
+    # Soft exponential quality: = 1.0 inside virtual_hw (min(margin,0) clips
+    # to 0 for feet inside the band, so there is no inside-band gradient),
+    # decays smoothly for feet outside. Decay length tau scales with vhw so
+    # out-of-band punishment is sharper at narrow stages — the old fixed 0.05m
+    # scale was too lenient (slow decay) once vhw dropped below ~0.05m.
+    tau = jp.maximum(0.5 * info["virtual_hw"], 0.01)
+    quality = jp.exp(jp.minimum(margin, 0.0) / tau)
     # Mean over ALL four feet (airborne and stance) so lifting a low-quality
     # foot cannot raise the multiplier — only adducting all feet inboard can.
     quality_mean = jp.mean(quality)
