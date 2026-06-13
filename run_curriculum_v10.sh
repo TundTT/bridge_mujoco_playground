@@ -15,9 +15,10 @@
 #   Stage 1: 0.4m  (hw=0.20), virtual U[0.10, 0.20], 100M
 #   Stage 2: 0.32m (hw=0.16), virtual U[0.08, 0.16], 100M  ← pre-inserted midpoint
 #   Stage 3: 0.24m (hw=0.12), virtual U[0.06, 0.12], 150M
-#   Stage 4: 0.16m (hw=0.08), virtual U[0.05, 0.08], 200M, ep_len=1500
-#   Stage 5: 0.13m (hw=0.065),virtual U[0.045,0.065], 150M, ep_len=1500
-#   Stage 6: 0.10m (hw=0.05), virtual U[0.040,0.050], 200M, ep_len=1500
+#   Stage 4: 0.20m (hw=0.10), virtual U[0.05, 0.10],  150M, ep_len=1500  ← inserted midpoint
+#   Stage 5: 0.16m (hw=0.08), virtual U[0.05, 0.08],  200M, ep_len=1500
+#   Stage 6: 0.13m (hw=0.065),virtual U[0.045,0.065], 150M, ep_len=1500
+#   Stage 7: 0.10m (hw=0.05), virtual U[0.040,0.050], 200M, ep_len=1500
 #
 # Gate: advance if term_success >= 0.70; extend +100M if 0.30-0.70;
 #       revert + insert midpoint if < 0.30.
@@ -167,23 +168,29 @@ if [ "${SKIP_TO_STAGE}" -le 3 ]; then
   gate_advance 3 0.12 0.06 "0.24m" 150000000
 fi
 
-# ── Stage 4: 0.16m, virtual U[0.05, 0.08], ep_len=1500 ───────────────────────
+# ── Stage 4: 0.20m, virtual U[0.05, 0.10], ep_len=1500 — midpoint inserted ───
+# Inserted after stage 4 (0.16m) failed at 0% — the 0.24m→0.16m jump was too
+# steep. This 0.20m step bridges the gap: 0.24m → 0.20m → 0.16m.
 if [ "${SKIP_TO_STAGE}" -le 4 ]; then
-  gate_advance 4 0.08 0.05 "0.16m" 200000000 "--episode_length 1500"
+  gate_advance 4 0.10 0.05 "0.20m" 150000000 "--episode_length 1500"
 fi
 
-# ── Stage 5: 0.13m, virtual U[0.045, 0.065], ep_len=1500 ─────────────────────
-# vhw_min=0.045 < hw=0.065: virtual target is tighter than physical, keeping
-# a live inboard gradient even when feet reach the physical edge.
+# ── Stage 5: 0.16m, virtual U[0.05, 0.08], ep_len=1500 ───────────────────────
 if [ "${SKIP_TO_STAGE}" -le 5 ]; then
-  gate_advance 5 0.065 0.045 "0.13m" 150000000 "--episode_length 1500"
+  gate_advance 5 0.08 0.05 "0.16m" 200000000 "--episode_length 1500"
 fi
 
-# ── Stage 6: 0.10m, virtual U[0.04, 0.05], ep_len=1500 ───────────────────────
-# vhw_min=0.04 < hw=0.05: same rationale — aim past the physical target so
-# foot_off_virtual still fires on a foot sitting exactly at the physical edge.
+# ── Stage 6: 0.13m, virtual U[0.045, 0.065], ep_len=1500 ─────────────────────
+# vhw_min=0.045 < hw=0.065: virtual target tighter than physical edge.
 if [ "${SKIP_TO_STAGE}" -le 6 ]; then
-  gate_advance 6 0.05 0.04 "0.10m" 200000000 "--episode_length 1500"
+  gate_advance 6 0.065 0.045 "0.13m" 150000000 "--episode_length 1500"
 fi
 
-echo "=== All 7 stages complete. Final checkpoint: ${CKPT} ===" >&2
+# ── Stage 7: 0.10m, virtual U[0.04, 0.05], ep_len=1500 ───────────────────────
+# vhw_min=0.04 < hw=0.05: aim past the physical target so foot_off_virtual
+# still fires on a foot sitting exactly at the physical edge.
+if [ "${SKIP_TO_STAGE}" -le 7 ]; then
+  gate_advance 7 0.05 0.04 "0.10m" 200000000 "--episode_length 1500"
+fi
+
+echo "=== All 8 stages complete. Final checkpoint: ${CKPT} ===" >&2
