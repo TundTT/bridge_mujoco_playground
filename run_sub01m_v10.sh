@@ -51,13 +51,14 @@ get_latest_ckpt() {
 }
 
 get_logdir() {
-  grep "Logs are being stored in:" "$1" | awk '{print $NF}'
+  # -a: treat binary as text (log may contain ANSI escape codes)
+  grep -a "Logs are being stored in:" "$1" | awk '{print $NF}'
 }
 
 get_success_rate() {
   local logfile="$1"
   local rate
-  rate=$(grep "metric/term_success:" "$logfile" 2>/dev/null | tail -1 | awk '{print $2}')
+  rate=$(grep -a "metric/term_success:" "$logfile" 2>/dev/null | tail -1 | awk '{print $2}')
   echo "${rate:-0}"
 }
 
