@@ -32,9 +32,10 @@ _HM_X_MIN, _HM_X_MAX = -3.0, 7.0
 _HM_Y_MIN, _HM_Y_MAX = -1.0, 1.0
 _HM_CELL = 0.03
 _HM_PATCH = 13
+_FOOT_RADIUS = 0.023  # Go1 foot collision sphere radius (m)
 
-# linvel(3)+gyro(3)+gravity(3)+joint_angles(12)+joint_vel(12)+last_act(12)+x_progress(1)
-_PROPRIO_SIZE = 46
+# linvel(3)+gyro(3)+gravity(3)+joint_angles(12)+joint_vel(12)+last_act(12)+x_progress(1)+foot_y(4)+trunk_y(1)+bridge_hw(1)
+_PROPRIO_SIZE = 52
 
 
 def default_config() -> config_dict.ConfigDict:
@@ -45,11 +46,15 @@ def default_config() -> config_dict.ConfigDict:
       Kp=35.0,
       Kd=0.5,
       action_repeat=1,
-      action_scale=0.3,
+      action_scale=0.5,
       history_len=3,
       soft_joint_pos_limit_factor=0.95,
       # Curriculum: bridge y half-extent in metres (0.4 = 0.8 m wide).
       bridge_half_width=0.4,
+      # Virtual half-width lower bound for per-episode foothold shaping.
+      # Each episode samples virtual_hw ~ U[virtual_hw_min, bridge_half_width].
+      # Reward and obs use virtual_hw; physical falls happen at bridge_half_width.
+      virtual_hw_min=0.15,
       # Terminate if root z drops below this (0.3 m below the 0.5 m platform surface).
       fall_threshold=0.2,
       # Terminate with success bonus when robot reaches this x (halfway into Platform B).
@@ -63,24 +68,36 @@ def default_config() -> config_dict.ConfigDict:
               gyro=0.2,
               gravity=0.05,
               linvel=0.1,
+              foot_y=0.005,
           ),
       ),
       reward_config=config_dict.create(
+          # Max foot clearance height for gait shaping (metres).
+          max_foot_height=0.08,
           scales=config_dict.create(
-              forward_vel=2.0,
               orientation=-5.0,
-              alive=0.1,
+              alive=0.0,
               torques=-0.0002,
               action_rate=-0.01,
               energy=-0.001,
-              termination=-1.0,
+              termination=-200.0,
               success=5000.0,
-              feet_air_time=0.0,
-              progress_to_goal=3.0,
+              # Contact-gated: progress banks during flight, pays at touchdown
+              # weighted by foothold quality of contacting feet only.
+              frontier_delta=50.0,
+              feet_air_time=2.0,
               lateral_deviation=-3.0,
               heading=-2.0,
-              foot_off_bridge=-5.0,
-              foot_lateral_deviation=-1.0,
+              foot_off_bridge=-50.0,
+              foot_off_virtual=-10.0,
+              feet_stale_air=-2.0,
+              lin_vel_z=-2.0,
+              ang_vel_xy=-0.1,
+              feet_slip=-0.25,
+              feet_clearance=-2.0,
+              feet_height=-0.2,
+              pose=0.5,
+              dof_pos_limits=-1.0,
           ),
       ),
       impl="jax",
@@ -112,12 +129,17 @@ class BridgeCrossing(go1_base.Go1Env):
 
   def _build_world_heightmap(self) -> None:
     xs = np.arange(_HM_X_MIN, _HM_X_MAX + _HM_CELL / 2, _HM_CELL)
-    ys = np.arange(_HM_Y_MIN, _HM_Y_MAX + _HM_CELL / 2, _HM_CELL)
+    # Build y-grid as integer multiples of cell size centred exactly on 0 so
+    # the bridge representation is symmetric. The old arange(-1.0, ...) offset
+    # the grid by up to 1.5cm, making the perceived bridge asymmetric and
+    # causing the policy to anchor its stance to the wrong physical edges.
+    n_half = int(round((_HM_Y_MAX - _HM_Y_MIN) / 2 / _HM_CELL))
+    ys = np.arange(-n_half, n_half + 1) * _HM_CELL
     xx, yy = np.meshgrid(xs, ys, indexing='ij')
     hw = self._config.bridge_half_width
-    on_platform_a = (xx >= -3.0) & (xx <= 0.0) & (np.abs(yy) <= 1.0)
-    on_bridge      = (xx >=  0.0) & (xx <= 4.0) & (np.abs(yy) <= hw)
-    on_platform_b  = (xx >=  4.0) & (xx <= 7.0) & (np.abs(yy) <= 1.0)
+    on_platform_a = (xx >= -3.0) & (xx <= 0.0) & (np.abs(yy) <= 1.0 + 1e-6)
+    on_bridge      = (xx >=  0.0) & (xx <= 4.0) & (np.abs(yy) <= hw + 1e-6)
+    on_platform_b  = (xx >=  4.0) & (xx <= 7.0) & (np.abs(yy) <= 1.0 + 1e-6)
     hm = (on_platform_a | on_bridge | on_platform_b).astype(np.float32)
     self._world_heightmap = jp.array(hm)
 
@@ -211,6 +233,17 @@ class BridgeCrossing(go1_base.Go1Env):
     )
     data = mjx.forward(self.mjx_model, data)
 
+    # Sample virtual half-width for this episode: U[virtual_hw_min, bridge_half_width].
+    # Clamp min ≤ max to guard against stage configs where hw < virtual_hw_min.
+    # Reward and obs use this value; physical falls still happen at bridge_half_width.
+    rng, key = jax.random.split(rng)
+    vhw_min = min(self._config.virtual_hw_min, self._config.bridge_half_width)
+    virtual_hw = jax.random.uniform(
+        key, (),
+        minval=vhw_min,
+        maxval=self._config.bridge_half_width,
+    )
+
     info = {
         "rng": rng,
         "last_act": jp.zeros(self.mjx_model.nu),
@@ -219,11 +252,43 @@ class BridgeCrossing(go1_base.Go1Env):
         "last_contact": jp.zeros(4, dtype=bool),
         "swing_peak": jp.zeros(4),
         "obs_history": jp.zeros((self._config.history_len - 1, _PROPRIO_SIZE)),
+        # Frontier tracker: max x reached this episode (monotone).
+        "max_x_reached": qpos[0],
+        # Spawn x: used by step() to reset max_x_reached on episode boundary.
+        "init_x": qpos[0],
+        # Progress banked during flight steps; paid out at next touchdown.
+        "unpaid_progress": jp.zeros(()),
+        # Per-episode virtual bridge width for foothold shaping.
+        "virtual_hw": virtual_hw,
     }
 
     metrics = {}
     for k in self._config.reward_config.scales.keys():
       metrics[f"reward/{k}"] = jp.zeros(())
+    # Furthest x reached this episode (monotone). Sum/ep_len ≈ average frontier.
+    metrics["metric/max_x_reached"] = jp.zeros(())
+    # Forward velocity per step (useful alongside max_x_reached).
+    metrics["metric/x_vel"] = jp.zeros(())
+    # Touchdown count: episode sum = total first_contact events.
+    # Normal trot ~100-150/ep; foot-tapping exploit ~500-1500/ep.
+    metrics["metric/touchdown_count"] = jp.zeros(())
+    # Air time accumulated at touchdown events. Divide by touchdown_count for mean.
+    metrics["metric/air_time_sum_at_td"] = jp.zeros(())
+    # Termination type: sum=1 if episode ended in fall, 0 if success or timeout.
+    metrics["metric/term_fall"] = jp.zeros(())
+    # Sum=1 if episode ended in success, 0 if fell or timed out.
+    metrics["metric/term_success"] = jp.zeros(())
+    # Fraction of steps where any abduction joint |action| > 0.95 (saturation proxy).
+    metrics["metric/abduction_saturation"] = jp.zeros(())
+    # Max |foot_y| across all feet per step. Div by ep_len = avg worst-case lateral.
+    metrics["metric/max_foot_y"] = jp.zeros(())
+    # Virtual bridge width used this episode (constant within episode).
+    metrics["metric/virtual_hw"] = jp.zeros(())
+    # Mean swing peak relative to deck (healthy trot ~0.08m; hopping if >0.15m).
+    metrics["metric/swing_peak"] = jp.zeros(())
+    # Per-step contact fraction for left (FL=1,RL=3) and right (FR=0,RR=2) sides.
+    metrics["metric/contact_left"] = jp.zeros(())
+    metrics["metric/contact_right"] = jp.zeros(())
 
     obs = self._get_obs(data, info)
     reward, done = jp.zeros(2)
@@ -234,6 +299,10 @@ class BridgeCrossing(go1_base.Go1Env):
     data = mjx_env.step(
         self.mjx_model, state.data, motor_targets, self.n_substeps
     )
+
+    # Detect EpisodeWrapper timeout: AutoReset teleports the robot back to spawn,
+    # so x drops by >0.5m in one ctrl step — impossible under normal physics.
+    teleported = state.data.qpos[0] > data.qpos[0] + 0.5
 
     # True if any terrain surface is under that foot.
     contact = jp.any(
@@ -256,8 +325,20 @@ class BridgeCrossing(go1_base.Go1Env):
     success = self._get_success(data)
     done = failure | success
 
+    # Frontier delta: bank capped progress; payout fires at contact in _get_reward.
+    # Cap per-step credit at 0.6 m/s to prevent windfall payouts from long hops.
+    new_max = jp.maximum(state.info["max_x_reached"], data.qpos[0])
+    capped_delta = jp.minimum(new_max - state.info["max_x_reached"], 0.6 * self.dt)
+    state.info["max_x_reached"] = new_max
+    state.info["unpaid_progress"] = state.info["unpaid_progress"] + capped_delta
+
     rewards = self._get_reward(
-        data, action, state.info, failure, success, first_contact
+        data, action, state.info, failure, success, first_contact, contact_filt
+    )
+
+    # Clear banked progress on any contact this step.
+    state.info["unpaid_progress"] = jp.where(
+        jp.any(contact_filt), jp.zeros(()), state.info["unpaid_progress"]
     )
     rewards = {
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
@@ -266,6 +347,10 @@ class BridgeCrossing(go1_base.Go1Env):
         jp.clip(sum(rewards.values()) * self.dt, -10.0, 10000.0), nan=0.0
     )
 
+    # Snapshot air_time BEFORE zeroing — first_contact feet are in contact this
+    # step, so their air_time would be wiped if we read after the reset below.
+    air_time_at_td = (state.info["feet_air_time"] * first_contact).sum()
+
     state.info["last_last_act"] = state.info["last_act"]
     state.info["last_act"] = action
     state.info["feet_air_time"] *= ~contact
@@ -273,14 +358,69 @@ class BridgeCrossing(go1_base.Go1Env):
     state.info["swing_peak"] *= ~contact
     for k, v in rewards.items():
       state.metrics[f"reward/{k}"] = v
+    foot_y = data.site_xpos[self._feet_site_id, 1]
+    state.metrics["metric/max_x_reached"] = state.info["max_x_reached"]
+    state.metrics["metric/x_vel"] = self.get_local_linvel(data)[0]
+    state.metrics["metric/touchdown_count"] = first_contact.sum().astype(jp.float32)
+    state.metrics["metric/air_time_sum_at_td"] = air_time_at_td
+    state.metrics["metric/term_fall"] = failure.astype(jp.float32)
+    state.metrics["metric/term_success"] = success.astype(jp.float32)
+    state.metrics["metric/abduction_saturation"] = jp.mean(
+        (jp.abs(action[0::3]) > 0.95).astype(jp.float32)
+    )
+    state.metrics["metric/max_foot_y"] = jp.max(jp.abs(foot_y))
+    state.metrics["metric/virtual_hw"] = state.info["virtual_hw"]
+    state.metrics["metric/swing_peak"] = jp.mean(state.info["swing_peak"])
+    # Left/right contact fraction for gait symmetry monitoring (FR=0,FL=1,RR=2,RL=3).
+    contact_f32 = contact.astype(jp.float32)
+    state.metrics["metric/contact_right"] = (contact_f32[0] + contact_f32[2]) / 2.0
+    state.metrics["metric/contact_left"] = (contact_f32[1] + contact_f32[3]) / 2.0
+
+    # ── Episode-boundary resets (fix BraxAutoResetWrapper info leak) ──────────
+    # `done` catches failure/success. `teleported` catches EpisodeWrapper timeouts
+    # (AutoReset restores spawn data/obs but not info, so we must clean up both).
+    boundary = done | teleported
+    state.info["rng"], key = jax.random.split(state.info["rng"])
+    vhw_min = min(self._config.virtual_hw_min, self._config.bridge_half_width)
+    new_vhw = jax.random.uniform(
+        key, (),
+        minval=vhw_min,
+        maxval=self._config.bridge_half_width,
+    )
+    state.info["virtual_hw"] = jp.where(boundary, new_vhw, state.info["virtual_hw"])
+    state.info["max_x_reached"] = jp.where(
+        boundary, state.info["init_x"], state.info["max_x_reached"]
+    )
+    state.info["unpaid_progress"] = jp.where(
+        boundary, jp.zeros(()), state.info["unpaid_progress"]
+    )
+    state.info["feet_air_time"] = jp.where(
+        boundary, jp.zeros(4), state.info["feet_air_time"]
+    )
+    state.info["last_contact"] = jp.where(
+        boundary, jp.zeros(4, dtype=bool), state.info["last_contact"]
+    )
+    state.info["swing_peak"] = jp.where(
+        boundary, jp.zeros(4), state.info["swing_peak"]
+    )
+    state.info["last_act"] = jp.where(
+        boundary, jp.zeros_like(state.info["last_act"]), state.info["last_act"]
+    )
+    state.info["last_last_act"] = jp.where(
+        boundary, jp.zeros_like(state.info["last_last_act"]), state.info["last_last_act"]
+    )
+    state.info["obs_history"] = jp.where(
+        boundary, jp.zeros_like(state.info["obs_history"]), state.info["obs_history"]
+    )
 
     done = done.astype(reward.dtype)
     return state.replace(data=data, obs=obs, reward=reward, done=done)
 
   def _get_failure(self, data: mjx.Data) -> jax.Array:
-    tilt = self.get_upvector(data)[-1] < 0.0
+    tilt = self.get_upvector(data)[-1] < 0.5  # terminate at ~60° tilt
     height = data.qpos[2] < self._config.fall_threshold
-    return tilt | height
+    nan_explosion = ~jp.isfinite(data.qpos).all()
+    return tilt | height | nan_explosion
 
   def _get_success(self, data: mjx.Data) -> jax.Array:
     # Robot has confidently crossed — reached halfway into Platform B.
@@ -339,6 +479,18 @@ class BridgeCrossing(go1_base.Go1Env):
 
     local_heightmap = self._get_local_heightmap(data)  # (169,)
 
+    # PUMA foothold prior: signed lateral y-distance of each foot from bridge
+    # centreline (y=0). Positive = right of centre, negative = left. Tiny
+    # Gaussian noise simulates real-world estimation error; defaults to 0.0.
+    foot_y = data.site_xpos[self._feet_site_id, 1]  # (4,) FR, FL, RR, RL
+    info["rng"], noise_rng = jax.random.split(info["rng"])
+    noisy_foot_y = (
+        foot_y
+        + jax.random.normal(noise_rng, (4,))
+        * self._config.noise_config.level
+        * self._config.noise_config.scales.foot_y
+    )
+
     proprio = jp.hstack([
         noisy_linvel,                             # 3
         noisy_gyro,                               # 3
@@ -347,16 +499,19 @@ class BridgeCrossing(go1_base.Go1Env):
         noisy_joint_vel,                          # 12
         info["last_act"],                         # 12
         jp.array([x_progress]),                   # 1
-    ])  # total: 46 = _PROPRIO_SIZE
+        noisy_foot_y,                             # 4 — PUMA foothold prior
+        jp.array([data.qpos[1]]),                 # 1 — trunk y (lateral drift)
+        jp.array([info["virtual_hw"] / 0.4]),              # 1 — virtual bridge width normalised
+    ])  # total: 52 = _PROPRIO_SIZE
 
     if self._config.history_len > 1:
       state = jp.hstack([
-          proprio,                                # 46
+          proprio,                                # 52
           local_heightmap,                        # 169
-          info["obs_history"].ravel(),            # (history_len-1) * 46
+          info["obs_history"].ravel(),            # (history_len-1) * 52
       ])
     else:
-      state = jp.hstack([proprio, local_heightmap])  # 215
+      state = jp.hstack([proprio, local_heightmap])  # 221
 
     accelerometer = self.get_accelerometer(data)
     angvel = self.get_global_angvel(data)
@@ -388,9 +543,34 @@ class BridgeCrossing(go1_base.Go1Env):
       failure: jax.Array,
       success: jax.Array,
       first_contact: jax.Array,
+      contact_filt: jax.Array,
   ) -> dict[str, jax.Array]:
+    foot_y = data.site_xpos[self._feet_site_id, 1]
+    margin = info["virtual_hw"] - jp.abs(foot_y)
+    # Soft exponential quality: = 1.0 inside virtual_hw (min(margin,0) clips
+    # to 0 for feet inside the band, so there is no inside-band gradient),
+    # decays smoothly for feet outside. Decay length tau scales with vhw so
+    # out-of-band punishment is sharper at narrow stages — the old fixed 0.05m
+    # scale was too lenient (slow decay) once vhw dropped below ~0.05m.
+    tau = jp.maximum(0.5 * info["virtual_hw"], 0.01)
+    quality = jp.exp(jp.minimum(margin, 0.0) / tau)
+    # Mean over ALL four feet (airborne and stance) so lifting a low-quality
+    # foot cannot raise the multiplier — only adducting all feet inboard can.
+    quality_mean = jp.mean(quality)
+    # Floor fades from 0.5 (proven wide regime, vhw >= 0.15) to 0.0 (target
+    # vhw <= 0.10), so a fully wide stance earns zero frontier at narrow widths.
+    floor = 0.5 * jp.clip((info["virtual_hw"] - 0.10) / 0.05, 0.0, 1.0)
+    foothold_multiplier = floor + (1.0 - floor) * quality_mean
+
+    # Contact-gated frontier: pay out all banked progress at touchdown,
+    # weighted by foothold quality. No contact → zero income this step.
+    any_contact = jp.any(contact_filt).astype(jp.float32)
+    frontier_payout = (info["unpaid_progress"] / self.dt) * foothold_multiplier * any_contact
+
+    global_linvel = self.get_global_linvel(data)
+    global_angvel = self.get_global_angvel(data)
+
     return {
-        "forward_vel": self._reward_forward_vel(self.get_local_linvel(data)),
         "orientation": self._cost_orientation(self.get_upvector(data)),
         "alive": jp.ones(()),
         "torques": self._cost_torques(data.actuator_force),
@@ -400,7 +580,7 @@ class BridgeCrossing(go1_base.Go1Env):
         "energy": self._cost_energy(data.qvel[6:], data.actuator_force),
         "termination": self._cost_termination(failure),
         "success": self._reward_success(success),
-        "progress_to_goal": self._reward_progress_to_goal(data.qpos[0]),
+        "frontier_delta": frontier_payout,
         "lateral_deviation": self._cost_lateral_deviation(data.qpos[1]),
         "heading": self._cost_heading(
             data.site_xmat[self._imu_site_id] @ jp.array([1.0, 0.0, 0.0])
@@ -409,27 +589,36 @@ class BridgeCrossing(go1_base.Go1Env):
             info["feet_air_time"], first_contact
         ),
         "foot_off_bridge": self._cost_foot_off_bridge(data, first_contact),
-        "foot_lateral_deviation": self._cost_foot_lateral_deviation(data),
+        "foot_off_virtual": self._cost_foot_off_virtual(data, info),
+        "feet_stale_air": self._cost_feet_stale_air(info["feet_air_time"]),
+        "lin_vel_z": self._cost_lin_vel_z(global_linvel),
+        "ang_vel_xy": self._cost_ang_vel_xy(global_angvel),
+        "feet_slip": self._cost_feet_slip(data, contact_filt),
+        "feet_clearance": self._cost_feet_clearance(data),
+        "feet_height": self._cost_feet_height(info["swing_peak"], first_contact),
+        "pose": self._reward_pose(data.qpos[7:]),
+        "dof_pos_limits": self._cost_joint_pos_limits(data.qpos[7:]),
     }
 
   def _reward_forward_vel(self, local_vel: jax.Array) -> jax.Array:
     return jp.clip(local_vel[0], 0.0, 2.0)
 
-  def _reward_progress_to_goal(self, x_pos: jax.Array) -> jax.Array:
+  def _reward_progress_to_goal(self, max_x_reached: jax.Array) -> jax.Array:
     # Log-shaped gradient from spawn (x=-1.5) to goal (x=5.5).
-    # Steep near spawn for fast early learning, tapers toward goal so the
-    # success bonus dominates the final push onto Platform B.
-    # Shift so log argument = 1.0 at spawn (log=0) and 8.0 at goal (log=2.079).
-    x_shifted = jp.clip(x_pos + 2.5, 1.0, 8.0)
+    # Accepts max_x_reached (monotonically non-decreasing) so that backward
+    # movement never improves this reward — eliminating the oscillation local
+    # optimum where the robot averages a moderate x position by going back and
+    # forth instead of pushing steadily forward.
+    x_shifted = jp.clip(max_x_reached + 2.5, 1.0, 8.0)
     return jp.log(x_shifted) / jp.log(jp.array(8.0))
 
   def _cost_lateral_deviation(self, y_pos: jax.Array) -> jax.Array:
     return jp.square(y_pos)
 
   def _cost_heading(self, forward_vec: jax.Array) -> jax.Array:
-    # Penalise the y-component of the robot's forward vector.
-    # Zero when facing +x, maximum (1.0) when facing sideways (±y).
-    return jp.square(forward_vec[1])
+    # 0 when facing +x, 2 when facing -x. Distinguishes forward from backward,
+    # unlike the old square(y) which was symmetric about ±x.
+    return 1.0 - jp.clip(forward_vec[0], -1.0, 1.0)
 
   def _cost_orientation(self, upvector: jax.Array) -> jax.Array:
     return jp.sum(jp.square(upvector[:2]))
@@ -457,28 +646,89 @@ class BridgeCrossing(go1_base.Go1Env):
   def _reward_feet_air_time(
       self, air_time: jax.Array, first_contact: jax.Array
   ) -> jax.Array:
-    return jp.sum((air_time - 0.1) * first_contact)
+    # Cap at 0.15s: rewards stepping frequency without incentivising longer hops.
+    capped = jp.minimum(air_time, 0.15)
+    return jp.sum((capped - 0.1) * first_contact)
+
+  def _cost_lin_vel_z(self, global_linvel: jax.Array) -> jax.Array:
+    return jp.square(global_linvel[2])
+
+  def _cost_ang_vel_xy(self, global_angvel: jax.Array) -> jax.Array:
+    return jp.sum(jp.square(global_angvel[:2]))
+
+  def _cost_feet_slip(self, data: mjx.Data, contact: jax.Array) -> jax.Array:
+    feet_vel = data.sensordata[self._foot_linvel_sensor_adr]
+    vel_xy = feet_vel[..., :2]
+    vel_xy_norm_sq = jp.sum(jp.square(vel_xy), axis=-1)
+    return jp.sum(vel_xy_norm_sq * contact.astype(jp.float32))
+
+  def _cost_feet_clearance(self, data: mjx.Data) -> jax.Array:
+    feet_vel = data.sensordata[self._foot_linvel_sensor_adr]
+    vel_xy = feet_vel[..., :2]
+    vel_norm = jp.sqrt(jp.linalg.norm(vel_xy, axis=-1))
+    foot_z = data.site_xpos[self._feet_site_id, 2]
+    delta = jp.abs(foot_z - self._config.reward_config.max_foot_height)
+    return jp.sum(delta * vel_norm)
+
+  def _cost_feet_height(
+      self, swing_peak: jax.Array, first_contact: jax.Array
+  ) -> jax.Array:
+    error = swing_peak / self._config.reward_config.max_foot_height - 1.0
+    return jp.sum(jp.square(error) * first_contact)
+
+  def _reward_pose(self, qpos: jax.Array) -> jax.Array:
+    weight = jp.array([0.1, 1.0, 0.1] * 4)
+    return jp.exp(-jp.sum(jp.square(qpos - self._default_pose) * weight))
+
+  def _cost_joint_pos_limits(self, qpos: jax.Array) -> jax.Array:
+    out_of_limits = -jp.clip(qpos - self._soft_lowers, None, 0.0)
+    out_of_limits += jp.clip(qpos - self._soft_uppers, 0.0, None)
+    return jp.sum(out_of_limits)
 
   def _cost_foot_off_bridge(
       self, data: mjx.Data, first_contact: jax.Array
   ) -> jax.Array:
-    foot_xy = data.site_xpos[self._feet_site_id, :2]  # (4, 2)
-    nx, ny = self._world_heightmap.shape
-    xi = jp.clip(
-        jp.round((foot_xy[:, 0] - _HM_X_MIN) / _HM_CELL).astype(jp.int32),
-        0, nx - 1,
-    )
-    yi = jp.clip(
-        jp.round((foot_xy[:, 1] - _HM_Y_MIN) / _HM_CELL).astype(jp.int32),
-        0, ny - 1,
-    )
-    on_surface = self._world_heightmap[xi, yi]  # (4,) binary
-    return jp.sum(first_contact * (1.0 - on_surface))
+    """Analytic surface check — no heightmap quantisation, exact boundaries.
 
-  def _cost_foot_lateral_deviation(self, data: mjx.Data) -> jax.Array:
-    foot_y = data.site_xpos[self._feet_site_id, 1]  # (4,) world-frame y
-    # Only penalise feet that overhang the bridge edge — zero cost for a normal
-    # wide stance on a wide bridge, bites progressively as the bridge narrows.
-    threshold = jp.maximum(self._config.bridge_half_width - 0.02, 0.0)
-    excess = jp.maximum(0.0, jp.abs(foot_y) - threshold)
-    return jp.sum(jp.square(excess))
+    Replaces the heightmap-lookup version whose 3cm cell size introduced a
+    ~1.5cm lateral offset error that grew to 23–46% of bridge half-width at
+    the narrow curriculum stages.
+    """
+    foot_x = data.site_xpos[self._feet_site_id, 0]
+    foot_y = data.site_xpos[self._feet_site_id, 1]
+    hw = self._config.bridge_half_width
+    on_platform_a = (foot_x >= -3.0) & (foot_x <= 0.0) & (jp.abs(foot_y) <= 1.0)
+    on_bridge      = (foot_x >=  0.0) & (foot_x <= 4.0) & (jp.abs(foot_y) <= hw)
+    on_platform_b  = (foot_x >=  4.0) & (foot_x <= 7.0) & (jp.abs(foot_y) <= 1.0)
+    on_surface = on_platform_a | on_bridge | on_platform_b
+    return jp.sum(first_contact * (~on_surface).astype(jp.float32))
+
+  def _cost_foot_off_virtual(
+      self, data: mjx.Data, info: dict[str, Any]
+  ) -> jax.Array:
+    """Linear hinge on lateral overshoot beyond virtual_hw, all feet, every step.
+
+    Contact-independent: swing and stance feet pay equally, so lifting a foot
+    cannot dodge the penalty. No contact gating means no cadence effect.
+    """
+    foot_y = data.site_xpos[self._feet_site_id, 1]
+    overshoot = jp.maximum(jp.abs(foot_y) + _FOOT_RADIUS - info["virtual_hw"], 0.0)
+    return jp.sum(overshoot)
+
+  def _cost_feet_stale_air(self, air_time: jax.Array) -> jax.Array:
+    """Penalise legs held in the air for >0.4s (the training-wheels pattern).
+
+    Normal swing (~0.2s) and even long flight phases (~0.3s) are exempt.
+    Only persistently lifted legs incur a cost, growing linearly with hold time.
+    """
+    return jp.sum(jp.maximum(air_time - 0.4, 0.0))
+
+  def _cost_backward_vel(self, local_vel: jax.Array) -> jax.Array:
+    """Penalise backward (-x) velocity to deter back-and-forth oscillation.
+
+    Returns the magnitude of any backward velocity (≥ 0). Combined with the
+    negative scale in reward_config, this imposes a cost symmetric to the
+    forward_vel reward, eliminating the free ride that oscillation gets from
+    forward strokes yielding reward while backward strokes cost nothing.
+    """
+    return jp.maximum(0.0, -local_vel[0])
