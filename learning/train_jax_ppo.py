@@ -22,6 +22,8 @@ import sys
 import time
 import warnings
 
+import numpy as np
+
 # Must be set before importing mujoco — the package reads this at import time
 # to preload the EGL backend. Setting it later has no effect.
 os.environ["MUJOCO_GL"] = "egl"
@@ -123,6 +125,9 @@ _WANDB_PROJECT = flags.DEFINE_string(
 )
 _WANDB_RUN_NAME = flags.DEFINE_string(
     "wandb_run_name", None, "WandB display name for the run (defaults to suffix or exp_name)"
+)
+_WANDB_GROUP = flags.DEFINE_string(
+    "wandb_group", None, "WandB group name for organising related runs"
 )
 _PLAY_ONLY = flags.DEFINE_boolean(
     "play_only", False, "If true, only play with the model and do not train"
@@ -362,7 +367,12 @@ def main(argv):
           "Install via: pip install wandb"
       )
     wandb_run_name = _WANDB_RUN_NAME.value or _SUFFIX.value or exp_name
-    wandb.init(project=_WANDB_PROJECT.value, entity="Tund", name=wandb_run_name)
+    wandb.init(
+        project=_WANDB_PROJECT.value,
+        entity="Tund",
+        name=wandb_run_name,
+        group=_WANDB_GROUP.value or None,
+    )
     wandb.config.update(env_cfg.to_dict())
     wandb.config.update({"env_name": _ENV_NAME.value})
 
@@ -453,7 +463,7 @@ def main(argv):
       for key, value in metrics.items():
         writer.add_scalar(key, value, num_steps)
       writer.flush()
-    if _RUN_EVALS.value:
+    if _RUN_EVALS.value and "eval/episode_reward" in metrics:
       print(f"{num_steps}: reward={metrics['eval/episode_reward']:.3f}")
       # Per-term reward breakdown (from state.metrics populated by the env).
       # Brax reports these under eval/episode_metrics/reward/<term>.
@@ -465,6 +475,13 @@ def main(argv):
         for k, v in reward_terms:
           term = k.split("reward/")[-1]
           print(f"  reward/{term}: {float(v):.5f}")
+      metric_terms = sorted(
+          (k, v) for k, v in metrics.items()
+          if "episode_metric/" in k and not k.endswith("_std")
+      )
+      for k, v in metric_terms:
+        term = k.split("episode_metric/")[-1]
+        print(f"  metric/{term}: {float(v):.5f}")
     if _LOG_TRAINING_METRICS.value:
       if "episode/sum_reward" in metrics:
         print(
@@ -582,12 +599,16 @@ def main(argv):
         frames = _vid_env.render(
             trajectory[::_vid_render_every],
             height=480, width=640,
+            camera="track",
             scene_option=_vid_scene,
         )
+        # Save locally for inspection.
         vid_path = logdir / f"rollout_step{current_step:012d}.mp4"
         media.write_video(str(vid_path), frames, fps=_vid_fps)
+
+        frames_np = np.transpose(np.asarray(frames), (0, 3, 1, 2))  # (T,H,W,3)→(T,C,H,W)
         wandb.log(
-            {"rollout_video": wandb.Video(str(vid_path), fps=_vid_fps, format="mp4")},
+            {"rollout_video": wandb.Video(frames_np, fps=int(_vid_fps), format="mp4")},
             step=current_step,
         )
         print(f"  [video] logged step {current_step}: {vid_path.name}")
@@ -691,13 +712,14 @@ def main(argv):
   for i, rollout in enumerate(trajectories):
     traj = rollout[::render_every]
     frames = infer_env.render(
-        traj, height=480, width=640, scene_option=scene_option
+        traj, height=480, width=640, camera="track", scene_option=scene_option
     )
     video_path = logdir / f"rollout{i}.mp4"
     media.write_video(video_path, frames, fps=fps)
     print(f"Rollout video saved as '{video_path}'.")
     if _USE_WANDB.value and wandb is not None:
-      wandb.log({f"rollout_video_{i}": wandb.Video(str(video_path), fps=fps, format="mp4")})
+      frames_np = np.transpose(np.asarray(frames), (0, 3, 1, 2))  # (T,H,W,3)→(T,C,H,W)
+      wandb.log({f"rollout_video_{i}": wandb.Video(frames_np, fps=int(fps), format="mp4")})
 
 
 def run():
