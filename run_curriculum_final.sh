@@ -49,7 +49,7 @@ fi
 source .venv/bin/activate
 export MUJOCO_GL="${MUJOCO_GL:-egl}"
 
-WANDB_PROJECT="bridge_crossing_final"
+WANDB_PROJECT="${WANDB_PROJECT:-bridge_crossing_final}"
 WANDB_GROUP="${WANDB_GROUP:-final_curriculum}"
 SKIP_TO_STAGE="${SKIP_TO_STAGE:-0}"
 INIT_CKPT="${INIT_CKPT:-}"
