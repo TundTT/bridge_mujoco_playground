@@ -63,6 +63,7 @@ dev = [
     "pytest-xdist",
 ]
 learning = [
+    "moviepy",
     "rsl-rl-lib>=3.0.0",
     "wandb",
 ]
