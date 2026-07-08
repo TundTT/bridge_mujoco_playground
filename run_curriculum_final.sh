@@ -47,6 +47,7 @@ if [ ! -d ".venv" ]; then
 fi
 
 source .venv/bin/activate
+export MUJOCO_GL="${MUJOCO_GL:-egl}"
 
 WANDB_PROJECT="bridge_crossing_final"
 WANDB_GROUP="${WANDB_GROUP:-final_curriculum}"
