@@ -139,21 +139,6 @@ def main() -> None:
     raise SystemExit("No matching stage logs found.")
 
   backup_run = None
-  if not args.dry_run:
-    backup_run = wandb.init(
-        entity=args.entity,
-        project=args.project,
-        job_type="checkpoint-backup",
-        name="backup_bridge_policy_checkpoints",
-        config={
-            "source_project": args.project,
-            "min_stage": args.min_stage,
-            "max_stage": args.max_stage,
-            "git_commit": git_commit,
-            "hostname": hostname,
-        },
-    )
-
   try:
     for stage in selected_stages:
       info = stage_logs[stage]
@@ -217,6 +202,21 @@ def main() -> None:
       )
       if args.dry_run:
         continue
+
+      if backup_run is None:
+        backup_run = wandb.init(
+            entity=args.entity,
+            project=args.project,
+            job_type="checkpoint-backup",
+            name="backup_bridge_policy_checkpoints",
+            config={
+                "source_project": args.project,
+                "min_stage": args.min_stage,
+                "max_stage": args.max_stage,
+                "git_commit": git_commit,
+                "hostname": hostname,
+            },
+        )
 
       artifact = wandb.Artifact(
           name=artifact_name,
