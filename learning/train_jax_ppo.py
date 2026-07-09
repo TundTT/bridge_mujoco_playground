@@ -606,8 +606,9 @@ def main(argv):
         vid_path = logdir / f"rollout_step{current_step:012d}.mp4"
         media.write_video(str(vid_path), frames, fps=_vid_fps)
 
+        frames_np = np.transpose(np.asarray(frames), (0, 3, 1, 2))  # (T,H,W,3)→(T,C,H,W)
         wandb.log(
-            {"rollout_video": wandb.Video(str(vid_path), format="mp4")},
+            {"rollout_video": wandb.Video(frames_np, fps=int(_vid_fps), format="mp4")},
             step=current_step,
         )
         print(f"  [video] logged step {current_step}: {vid_path.name}")
@@ -717,7 +718,8 @@ def main(argv):
     media.write_video(video_path, frames, fps=fps)
     print(f"Rollout video saved as '{video_path}'.")
     if _USE_WANDB.value and wandb is not None:
-      wandb.log({f"rollout_video_{i}": wandb.Video(str(video_path), format="mp4")})
+      frames_np = np.transpose(np.asarray(frames), (0, 3, 1, 2))  # (T,H,W,3)→(T,C,H,W)
+      wandb.log({f"rollout_video_{i}": wandb.Video(frames_np, fps=int(fps), format="mp4")})
 
 
 def run():
