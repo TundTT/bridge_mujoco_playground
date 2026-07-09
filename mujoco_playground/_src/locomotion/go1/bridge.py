@@ -201,6 +201,30 @@ class BridgeCrossing(go1_base.Go1Env):
 
     return self._world_heightmap[xi, yi].ravel()
 
+  def _cylinder_surface_z(
+      self, y_pos: jax.Array, radius: float
+  ) -> jax.Array:
+    """Upper surface height for the round bridge cross-section."""
+    y_abs = jp.abs(y_pos)
+    y_clamped = jp.minimum(y_abs, radius)
+    z_center = 0.5 - radius
+    return z_center + jp.sqrt(
+        jp.maximum(radius * radius - jp.square(y_clamped), 0.0)
+    )
+
+  def _round_support_surface_z(
+      self, foot_x: jax.Array, foot_y: jax.Array
+  ) -> jax.Array:
+    radius = self._config.bridge_half_width
+    bridge_z = self._cylinder_surface_z(foot_y, radius)
+    on_bridge_x = (foot_x >= 0.0) & (foot_x <= 4.0)
+    return jp.where(on_bridge_x, bridge_z, 0.5)
+
+  def _foot_height_above_support(self, data: mjx.Data) -> jax.Array:
+    foot_pos = data.site_xpos[self._feet_site_id]
+    support_z = self._round_support_surface_z(foot_pos[:, 0], foot_pos[:, 1])
+    return foot_pos[:, 2] - support_z
+
   def _post_init(self) -> None:
     self._init_q = jp.array(self._mj_model.keyframe("home").qpos)
     self._default_pose = jp.array(self._mj_model.keyframe("home").qpos[7:])
@@ -343,7 +367,10 @@ class BridgeCrossing(go1_base.Go1Env):
     first_contact = (state.info["feet_air_time"] > 0.0) * contact_filt
     state.info["feet_air_time"] += self.dt
 
-    p_fz = data.site_xpos[self._feet_site_id, -1]
+    if self._config.bridge_shape == "round":
+      p_fz = self._foot_height_above_support(data)
+    else:
+      p_fz = data.site_xpos[self._feet_site_id, -1]
     state.info["swing_peak"] = jp.maximum(state.info["swing_peak"], p_fz)
 
     obs = self._get_obs(data, state.info)
@@ -697,7 +724,10 @@ class BridgeCrossing(go1_base.Go1Env):
     feet_vel = data.sensordata[self._foot_linvel_sensor_adr]
     vel_xy = feet_vel[..., :2]
     vel_norm = jp.sqrt(jp.linalg.norm(vel_xy, axis=-1))
-    foot_z = data.site_xpos[self._feet_site_id, 2]
+    if self._config.bridge_shape == "round":
+      foot_z = self._foot_height_above_support(data)
+    else:
+      foot_z = data.site_xpos[self._feet_site_id, 2]
     delta = jp.abs(foot_z - self._config.reward_config.max_foot_height)
     return jp.sum(delta * vel_norm)
 
@@ -729,7 +759,13 @@ class BridgeCrossing(go1_base.Go1Env):
     foot_y = data.site_xpos[self._feet_site_id, 1]
     hw = self._config.bridge_half_width
     on_platform_a = (foot_x >= -3.0) & (foot_x <= 0.0) & (jp.abs(foot_y) <= 1.0)
-    on_bridge      = (foot_x >=  0.0) & (foot_x <= 4.0) & (jp.abs(foot_y) <= hw)
+    if self._config.bridge_shape == "round":
+      bridge_limit = hw + _FOOT_RADIUS
+    else:
+      bridge_limit = hw
+    on_bridge = (
+        (foot_x >= 0.0) & (foot_x <= 4.0) & (jp.abs(foot_y) <= bridge_limit)
+    )
     on_platform_b  = (foot_x >=  4.0) & (foot_x <= 7.0) & (jp.abs(foot_y) <= 1.0)
     on_surface = on_platform_a | on_bridge | on_platform_b
     return jp.sum(first_contact * (~on_surface).astype(jp.float32))
@@ -743,7 +779,10 @@ class BridgeCrossing(go1_base.Go1Env):
     cannot dodge the penalty. No contact gating means no cadence effect.
     """
     foot_y = data.site_xpos[self._feet_site_id, 1]
-    overshoot = jp.maximum(jp.abs(foot_y) + _FOOT_RADIUS - info["virtual_hw"], 0.0)
+    if self._config.bridge_shape == "round":
+      overshoot = jp.maximum(jp.abs(foot_y) - info["virtual_hw"], 0.0)
+    else:
+      overshoot = jp.maximum(jp.abs(foot_y) + _FOOT_RADIUS - info["virtual_hw"], 0.0)
     return jp.sum(overshoot)
 
   def _cost_feet_stale_air(self, air_time: jax.Array) -> jax.Array:
