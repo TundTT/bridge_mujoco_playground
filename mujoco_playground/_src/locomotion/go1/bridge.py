@@ -144,6 +144,12 @@ class BridgeCrossing(go1_base.Go1Env):
       self._mj_model.geom_quat[bridge_id] = np.array([
           np.sqrt(0.5), 0.0, np.sqrt(0.5), 0.0
       ])
+      # The XML bridge is compiled as an unrotated box, which lets MuJoCo mark
+      # its geom frame as identical to the body frame. Clear that optimization
+      # after changing geom_quat or the cylinder remains upright in data.geom_xmat.
+      self._mj_model.geom_sameframe[bridge_id] = (
+          mujoco.mjtSameFrame.mjSAMEFRAME_NONE.value
+      )
     else:
       raise ValueError(f"Unsupported bridge_shape: {self._config.bridge_shape}")
     mujoco.mj_setConst(self._mj_model, mujoco.MjData(self._mj_model))

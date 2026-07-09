@@ -45,8 +45,8 @@ if [ ! -d "$INIT_CKPT" ]; then
   exit 1
 fi
 
-WANDB_PROJECT="${WANDB_PROJECT:-go1_round_beam_curriculum_from_2p5mm_bridge}"
-WANDB_GROUP="${WANDB_GROUP:-round_beam_transfer}"
+WANDB_PROJECT="${WANDB_PROJECT:-go1_cylindrical_beam_curriculum_from_2p5mm_bridge}"
+WANDB_GROUP="${WANDB_GROUP:-round_beam_transfer_fixed}"
 SKIP_TO_STAGE="${SKIP_TO_STAGE:-0}"
 STEPS_PER_STAGE="${STEPS_PER_STAGE:-200000000}"
 EXTENSION_STEPS="${EXTENSION_STEPS:-100000000}"
@@ -82,6 +82,7 @@ run_stage() {
 
   echo "=== Round beam stage ${stage}: ${width_str} diameter (radius=${radius}, ep_len=${ep_len}) ===" >&2
 
+  set +e
   train-jax-ppo --env_name Go1BridgeCrossing \
     --num_timesteps "${steps}" \
     --load_checkpoint_path "$load_ckpt" \
@@ -92,7 +93,15 @@ run_stage() {
     --wandb_run_name "round_beam_stage${stage}_${width_str}" \
     --wandb_group "${WANDB_GROUP}" \
     --use_wandb \
-    2>&1 | tee "${logfile}" >/dev/null
+    >"${logfile}" 2>&1
+  local train_status=$?
+  set -e
+  if [ "$train_status" -ne 0 ]; then
+    echo "Round beam stage ${stage} trainer exited with status ${train_status}." >&2
+    echo "Last 80 lines from ${logfile}:" >&2
+    tail -80 "${logfile}" >&2 || true
+    return "$train_status"
+  fi
 
   local logdir
   logdir=$(get_logdir "${logfile}")
