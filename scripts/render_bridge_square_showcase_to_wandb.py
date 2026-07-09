@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render selected bridge policies with presentational square bridge geometry."""
+"""Render selected bridge policies with presentational bridge geometry."""
 
 from __future__ import annotations
 
@@ -160,6 +160,11 @@ def _choose_rollout(env, policy, seed: int, max_steps: int, max_attempts: int):
   for attempt in range(max_attempts):
     result = _rollout_success(env, policy, seed + attempt, max_steps)
     success, trajectory, total_reward, max_x = result
+    print(
+        f"  attempt {attempt + 1}/{max_attempts}: "
+        f"success={success} reward={total_reward:.3f} max_x={max_x:.3f} "
+        f"steps={len(trajectory)}"
+    )
     if best is None or max_x > best[3]:
       best = result
     if success:
@@ -168,11 +173,10 @@ def _choose_rollout(env, policy, seed: int, max_steps: int, max_attempts: int):
   return max_attempts, best
 
 
-def _make_square_bridge_modifier(env, bridge_width_m: float):
+def _make_bridge_modifier(env, bridge_width_m: float, beam_shape: str):
   bridge_id = env.mj_model.geom("bridge").id
-  half_width = bridge_width_m / 2.0
-  half_height = half_width
-  center_z = 0.5 - half_height
+  radius = bridge_width_m / 2.0
+  center_z = 0.5 - radius
 
   def modify_scene(scene: mujoco.MjvScene) -> None:
     for geom_idx in range(scene.ngeom):
@@ -181,9 +185,20 @@ def _make_square_bridge_modifier(env, bridge_width_m: float):
           geom.objtype == mujoco.mjtObj.mjOBJ_GEOM
           and geom.objid == bridge_id
       ):
-        geom.type = mujoco.mjtGeom.mjGEOM_BOX
-        geom.size[:] = np.array([2.0, half_width, half_height])
-        geom.pos[:] = np.array([2.0, 0.0, center_z])
+        if beam_shape == "square":
+          geom.type = mujoco.mjtGeom.mjGEOM_BOX
+          geom.size[:] = np.array([2.0, radius, radius])
+          geom.pos[:] = np.array([2.0, 0.0, center_z])
+        elif beam_shape == "round":
+          mujoco.mjv_connector(
+              geom,
+              mujoco.mjtGeom.mjGEOM_CYLINDER,
+              radius,
+              np.array([0.0, 0.0, center_z]),
+              np.array([4.0, 0.0, center_z]),
+          )
+        else:
+          raise ValueError(f"Unsupported beam shape: {beam_shape}")
         geom.rgba[:] = np.array([0.95, 0.64, 0.18, 1.0])
         return
 
@@ -194,6 +209,7 @@ def _render_video(
     env,
     trajectory,
     bridge_width_m: float,
+    beam_shape: str,
     output_path: Path,
     camera: str,
     height: int,
@@ -206,7 +222,7 @@ def _render_video(
   scene_option.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = False
   scene_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTFORCE] = False
   sampled = trajectory[::render_every]
-  modifier = _make_square_bridge_modifier(env, bridge_width_m)
+  modifier = _make_bridge_modifier(env, bridge_width_m, beam_shape)
   frames = env.render(
       sampled,
       height=height,
@@ -223,6 +239,14 @@ def _format_width_label(width_m: float) -> str:
   return f"{width_m:g}m"
 
 
+def _visual_geometry_description(beam_shape: str) -> str:
+  if beam_shape == "square":
+    return "box square cross-section, top flush with platforms"
+  if beam_shape == "round":
+    return "cylinder round cross-section, top tangent flush with platforms"
+  raise ValueError(f"Unsupported beam shape: {beam_shape}")
+
+
 def _log_per_width_runs(
     args: argparse.Namespace,
     manifest: list[dict[str, Any]],
@@ -233,10 +257,10 @@ def _log_per_width_runs(
     run = wandb.init(
         entity=args.entity,
         project=args.project,
-        name=f"square_beam_{width_label}",
-        group="selected_square_beam_showcase",
+        name=f"{args.beam_shape}_beam_{width_label}",
+        group=f"selected_{args.beam_shape}_beam_showcase",
         job_type="showcase-video",
-        tags=["showcase", "square-beam", f"width-{width_label}"],
+        tags=["showcase", f"{args.beam_shape}-beam", f"width-{width_label}"],
         config={
             "source_project": args.source_project,
             "source_run_id": row["source_run_id"],
@@ -244,14 +268,21 @@ def _log_per_width_runs(
             "stage": row["stage"],
             "bridge_width_m": row["bridge_width_m"],
             "bridge_height_m": row["bridge_height_m"],
+            "bridge_diameter_m": row["bridge_width_m"],
             "bridge_length_m": 4.0,
-            "visual_geometry": "box square cross-section, top flush with platforms",
+            "beam_shape": args.beam_shape,
+            "physics_beam_shape": args.physics_beam_shape,
+            "visual_geometry": _visual_geometry_description(args.beam_shape),
             "summary_showcase_run_id": summary_run_id,
         },
         reinit=True,
     )
     video_path = Path(row["video"])
-    wandb.log({"square_beam_rollout": wandb.Video(str(video_path), format="mp4")})
+    wandb.log({
+        f"{args.beam_shape}_beam_rollout": wandb.Video(
+            str(video_path), format="mp4"
+        )
+    })
     run.summary["success"] = row["success"]
     run.summary["attempts"] = row["attempts"]
     run.summary["episode_reward"] = row["episode_reward"]
@@ -268,7 +299,17 @@ def main() -> None:
   parser.add_argument("--entity", default="Tund")
   parser.add_argument("--source-project", default="bridge_crossing_final_v2")
   parser.add_argument("--project", default="bridge_crossing_final_showcase")
-  parser.add_argument("--run-name", default="square_cross_section_showcase")
+  parser.add_argument("--run-name", default=None)
+  parser.add_argument("--beam-shape", choices=("square", "round"), default="square")
+  parser.add_argument(
+      "--physics-beam-shape",
+      choices=("box", "round"),
+      default="box",
+      help=(
+          "Actual MJX collision geometry used for rollout. Use round to test "
+          "whether a policy generalizes to a physical cylinder beam."
+      ),
+  )
   parser.add_argument("--camera", default="track")
   parser.add_argument("--height", type=int, default=720)
   parser.add_argument("--width", type=int, default=1280)
@@ -288,7 +329,7 @@ def main() -> None:
   timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
   output_dir = (
       args.output_dir
-      or Path("logs") / f"bridge_square_showcase-{timestamp}"
+      or Path("logs") / f"bridge_{args.beam_shape}_showcase-{timestamp}"
   ).resolve()
   output_dir.mkdir(parents=True, exist_ok=True)
   artifact_root = output_dir / "checkpoint_artifacts"
@@ -297,9 +338,9 @@ def main() -> None:
   run = wandb.init(
       entity=args.entity,
       project=args.project,
-      name=args.run_name,
+      name=args.run_name or f"{args.beam_shape}_beam_selected_widths",
       job_type="showcase-render",
-      tags=["showcase", "square-cross-section", "go1", "bridge"],
+      tags=["showcase", f"{args.beam_shape}-beam", "go1", "bridge"],
       config={
           "source_project": args.source_project,
           "camera": args.camera,
@@ -307,7 +348,9 @@ def main() -> None:
           "width": args.width,
           "render_every": args.render_every,
           "max_steps": args.max_steps,
-          "bridge_visual": "box with full height equal to full width",
+          "beam_shape": args.beam_shape,
+          "bridge_visual": _visual_geometry_description(args.beam_shape),
+          "physics_beam_shape": args.physics_beam_shape,
           "bridge_top_z_m": 0.5,
       },
   )
@@ -346,6 +389,7 @@ def main() -> None:
               "impl": "jax",
               "bridge_half_width": half_width,
               "virtual_hw_min": half_width,
+              "bridge_shape": args.physics_beam_shape,
           },
       )
       policy = _make_policy(checkpoint_path, env)
@@ -357,11 +401,15 @@ def main() -> None:
           max_attempts=args.max_attempts,
       )
       success, trajectory, total_reward, max_x = result
-      video_path = output_dir / f"bridge_{_width_slug(item['width_label'])}m_square.mp4"
+      video_path = (
+          output_dir
+          / f"bridge_{_width_slug(item['width_label'])}m_{args.beam_shape}.mp4"
+      )
       fps = _render_video(
           env,
           trajectory,
           width_m,
+          args.beam_shape,
           video_path,
           camera=args.camera,
           height=args.height,
@@ -369,7 +417,7 @@ def main() -> None:
           render_every=args.render_every,
       )
       video = wandb.Video(str(video_path), fps=int(fps), format="mp4")
-      key = f"bridge_{_width_slug(item['width_label'])}m_square"
+      key = f"bridge_{_width_slug(item['width_label'])}m_{args.beam_shape}"
       wandb.log({key: video}, step=int(item["stage"]))
       table.add_data(
           item["stage"],
@@ -387,6 +435,9 @@ def main() -> None:
           "stage": item["stage"],
           "bridge_width_m": width_m,
           "bridge_height_m": width_m,
+          "bridge_diameter_m": width_m,
+          "beam_shape": args.beam_shape,
+          "physics_beam_shape": args.physics_beam_shape,
           "success": success,
           "attempts": attempts,
           "episode_reward": total_reward,

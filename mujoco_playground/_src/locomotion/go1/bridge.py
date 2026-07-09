@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional, Union
 import jax
 import jax.numpy as jp
 from ml_collections import config_dict
+import mujoco
 from mujoco import mjx
 from mujoco.mjx._src import math
 import numpy as np
@@ -51,6 +52,10 @@ def default_config() -> config_dict.ConfigDict:
       soft_joint_pos_limit_factor=0.95,
       # Curriculum: bridge y half-extent in metres (0.4 = 0.8 m wide).
       bridge_half_width=0.4,
+      # Physical bridge shape. "box" preserves the original flat rectangular deck.
+      # "round" uses a cylinder along x with diameter = 2 * bridge_half_width and
+      # top tangent flush with the platform surface.
+      bridge_shape="box",
       # Virtual half-width lower bound for per-episode foothold shaping.
       # Each episode samples virtual_hw ~ U[virtual_hw_min, bridge_half_width].
       # Reward and obs use virtual_hw; physical falls happen at bridge_half_width.
@@ -119,9 +124,29 @@ class BridgeCrossing(go1_base.Go1Env):
         config=config,
         config_overrides=config_overrides,
     )
-    # Patch bridge width from config before training starts.
+    # Patch bridge geometry from config before training starts.
     bridge_id = self._mj_model.geom("bridge").id
-    self._mj_model.geom_size[bridge_id, 1] = self._config.bridge_half_width
+    if self._config.bridge_shape == "box":
+      self._mj_model.geom_type[bridge_id] = mujoco.mjtGeom.mjGEOM_BOX.value
+      self._mj_model.geom_size[bridge_id] = np.array([
+          2.0,
+          self._config.bridge_half_width,
+          0.25,
+      ])
+      self._mj_model.geom_pos[bridge_id] = np.array([2.0, 0.0, 0.25])
+      self._mj_model.geom_quat[bridge_id] = np.array([1.0, 0.0, 0.0, 0.0])
+    elif self._config.bridge_shape == "round":
+      radius = self._config.bridge_half_width
+      self._mj_model.geom_type[bridge_id] = mujoco.mjtGeom.mjGEOM_CYLINDER.value
+      self._mj_model.geom_size[bridge_id] = np.array([radius, 2.0, 0.0])
+      self._mj_model.geom_pos[bridge_id] = np.array([2.0, 0.0, 0.5 - radius])
+      # MuJoCo cylinders are aligned with local z; rotate local z onto world x.
+      self._mj_model.geom_quat[bridge_id] = np.array([
+          np.sqrt(0.5), 0.0, np.sqrt(0.5), 0.0
+      ])
+    else:
+      raise ValueError(f"Unsupported bridge_shape: {self._config.bridge_shape}")
+    mujoco.mj_setConst(self._mj_model, mujoco.MjData(self._mj_model))
     self._mjx_model = mjx.put_model(self._mj_model, impl=self._config.impl)
 
     self._build_world_heightmap()
