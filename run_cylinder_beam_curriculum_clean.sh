@@ -188,17 +188,21 @@ echo "Initial checkpoint: ${INIT_CKPT}" >&2
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}" >&2
 echo "Stage logs: ${RUN_LOG_DIR}" >&2
 
-STAGE_DIAMETERS=(
-  0.4
-  0.3
-  0.2
-  0.1
-  0.05
-  0.025
-  0.01
-  0.005
-  0.0025
-)
+if [ -n "${STAGE_DIAMETERS_OVERRIDE:-}" ]; then
+  read -r -a STAGE_DIAMETERS <<< "$STAGE_DIAMETERS_OVERRIDE"
+else
+  STAGE_DIAMETERS=(
+    0.4
+    0.3
+    0.2
+    0.1
+    0.05
+    0.025
+    0.01
+    0.005
+    0.0025
+  )
+fi
 
 for idx in "${!STAGE_DIAMETERS[@]}"; do
   if [ "$idx" -lt "$SKIP_TO_STAGE" ]; then
