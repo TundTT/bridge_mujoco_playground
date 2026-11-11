@@ -92,14 +92,20 @@ def _survival_figure(evals, out: pathlib.Path):
   plt.close(fig)
 
 
-def _j50_figure(evals, out: pathlib.Path):
+def _generalist_key(tag):
+  """Eval name for the push-trained 0.06 m policy tested on width `tag`."""
+  return "B_w006" if tag == "w006" else f"X_B_w006_p20_at_{tag}"
+
+
+def _j50_figure(evals, out: pathlib.Path, key=lambda tag: f"B_{tag}",
+                title="Push needed to make the robot fall half the time"):
   fig, ax = plt.subplots(figsize=(6.5, 4.2))
   fig.patch.set_facecolor(SURFACE)
   _style(ax)
   for cond, label, color, marker in CONDITIONS:
     pts = []
     for tag, width in WIDTHS:
-      e = evals.get((cond, f"B_{tag}"))
+      e = evals.get((cond, key(tag)))
       if e and e["critical_impulse_J50_Ns"] is not None:
         j = e["critical_impulse_J50_Ns"]
         if math.isinf(j):
@@ -114,8 +120,7 @@ def _j50_figure(evals, out: pathlib.Path):
                 textcoords="offset points", fontsize=8, color=INK, va="center")
   ax.set_xlabel("Beam width (m)", fontsize=9, color=INK)
   ax.set_ylabel("Critical push J50 (N·s)", fontsize=9, color=INK)
-  ax.set_title("Push needed to make the robot fall half the time",
-               fontsize=11, color=INK)
+  ax.set_title(title, fontsize=11, color=INK)
   ax.legend(frameon=False, fontsize=9)
   fig.tight_layout()
   fig.savefig(out, dpi=160, bbox_inches="tight", facecolor=SURFACE)
@@ -138,6 +143,23 @@ def main():
     for cond, *_ in CONDITIONS:
       a = evals.get((cond, a_stage[tag]))
       b = evals.get((cond, f"B_{tag}"))
+      cells.append(
+          f"{_fmt_j50(a and a['critical_impulse_J50_Ns'])} → "
+          f"{_fmt_j50(b and b['critical_impulse_J50_Ns'])}"
+      )
+    lines.append(f"| {width:.2f} m | " + " | ".join(cells) + " |")
+
+  lines += ["", "## J50 (N·s) of the 0.06 m-trained policies on every width", "",
+            "Same policy for all widths per condition, so a stall at one",
+            "width's curriculum stage cannot masquerade as push intolerance.", "",
+            "| Width | " + " | ".join(f"{l} (before → after push training)" for _, l, _, _ in CONDITIONS) + " |",
+            "|---|" + "---|" * len(CONDITIONS)]
+  for tag, width in WIDTHS:
+    before = "A11_w006" if tag == "w006" else f"X_A11_at_{tag}"
+    cells = []
+    for cond, *_ in CONDITIONS:
+      a = evals.get((cond, before))
+      b = evals.get((cond, _generalist_key(tag)))
       cells.append(
           f"{_fmt_j50(a and a['critical_impulse_J50_Ns'])} → "
           f"{_fmt_j50(b and b['critical_impulse_J50_Ns'])}"
@@ -178,7 +200,9 @@ def main():
   (root / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
   _survival_figure(evals, root / "survival_curves.png")
   _j50_figure(evals, root / "j50_vs_width.png")
-  print(f"wrote {root / 'summary.md'}, survival_curves.png, j50_vs_width.png")
+  _j50_figure(evals, root / "j50_vs_width_generalist.png", key=_generalist_key,
+              title="Critical push, 0.06 m-trained policy on each width")
+  print(f"wrote {root / 'summary.md'}, survival_curves.png, j50_vs_width*.png")
 
 
 if __name__ == "__main__":
