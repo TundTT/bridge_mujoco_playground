@@ -148,7 +148,7 @@ def brax_ppo_config(
       value_obs_key="privileged_state",
     )
 
-  elif env_name == "Go1BridgeCrossing":
+  elif env_name in ("Go1BridgeCrossing", "Go1BridgeCrossingTail"):
     rl_config.num_timesteps = 100_000_000
     rl_config.num_evals = 10
     rl_config.discounting = 0.997

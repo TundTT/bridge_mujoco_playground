@@ -30,6 +30,9 @@ FULL_COLLISIONS_FLAT_TERRAIN_XML = (
     ROOT_PATH / "xmls" / "scene_mjx_fullcollisions_flat_terrain.xml"
 )
 FEET_ONLY_BRIDGE_XML = ROOT_PATH / "xmls" / "scene_mjx_feetonly_bridge.xml"
+FEET_ONLY_BRIDGE_TAIL_XML = (
+    ROOT_PATH / "xmls" / "scene_mjx_feetonly_bridge_tail.xml"
+)
 
 
 def task_to_xml(task_name: str) -> epath.Path:

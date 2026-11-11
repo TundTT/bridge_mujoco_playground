@@ -65,6 +65,27 @@ def default_config() -> config_dict.ConfigDict:
       # Terminate with success bonus when robot reaches this x (halfway into Platform B).
       # Platform B spans x=4.0 to x=7.0; midpoint is 5.5.
       goal_x=5.5,
+      # BraxAutoResetWrapper restores data/obs but not info after a *timeout*,
+      # and the `teleported` check in step() can never fire (the wrapper swaps
+      # data in after env.step returns). When True, the first step of every
+      # episode (info["steps"] == 0, zeroed by the wrapper) re-initialises the
+      # per-episode info. Off by default so existing runs stay reproducible.
+      reset_info_on_new_episode=False,
+      # Random external pushes on the trunk (disabled by default so existing
+      # runs are unchanged). Each push is a half-sine force pulse on the trunk
+      # with a sampled impulse in N*s, so the same "shove" is applied whatever
+      # the robot's mass (tail vs no-tail). Peak force = impulse * pi / (2 T).
+      # Direction is world ±y (perpendicular to the bridge) rotated by
+      # U(-spread, spread) in yaw. Keep enable=True across curriculum stages
+      # (use impulse=[0, 0] for no pushes): it adds 3 critic inputs, so
+      # toggling it breaks checkpoint loading.
+      push_config=config_dict.create(
+          enable=False,
+          interval=[2.0, 4.0],  # s of quiet time before each push
+          duration=[0.05, 0.2],  # s, length of the half-sine force pulse
+          impulse=[1.5, 7.0],  # N*s per push (7.3 N*s = 0.5 m/s on 14.6 kg)
+          lateral_spread_deg=30.0,
+      ),
       noise_config=config_dict.create(
           level=1.0,
           scales=config_dict.create(
@@ -118,12 +139,14 @@ class BridgeCrossing(go1_base.Go1Env):
       self,
       config: config_dict.ConfigDict = default_config(),
       config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None,
+      xml_path: Optional[str] = None,
   ):
     super().__init__(
-        xml_path=consts.FEET_ONLY_BRIDGE_XML.as_posix(),
+        xml_path=xml_path or consts.FEET_ONLY_BRIDGE_XML.as_posix(),
         config=config,
         config_overrides=config_overrides,
     )
+    self._customize_mj_model()
     # Patch bridge geometry from config before training starts.
     bridge_id = self._mj_model.geom("bridge").id
     if self._config.bridge_shape == "box":
@@ -157,6 +180,9 @@ class BridgeCrossing(go1_base.Go1Env):
 
     self._build_world_heightmap()
     self._post_init()
+
+  def _customize_mj_model(self) -> None:
+    """Hook for subclasses to patch the MjModel before it is put on device."""
 
   def _build_world_heightmap(self) -> None:
     xs = np.arange(_HM_X_MIN, _HM_X_MAX + _HM_CELL / 2, _HM_CELL)
@@ -228,6 +254,17 @@ class BridgeCrossing(go1_base.Go1Env):
   def _post_init(self) -> None:
     self._init_q = jp.array(self._mj_model.keyframe("home").qpos)
     self._default_pose = jp.array(self._mj_model.keyframe("home").qpos[7:])
+    # Per-actuator action scale (subclasses may override individual entries).
+    self._action_scale = jp.full(
+        self._mj_model.nu, self._config.action_scale, dtype=jp.float32
+    )
+    # linvel+gyro+gravity (9) + joint pos/vel + last_act + x_progress, foot_y,
+    # trunk_y, bridge_hw (7). Equals _PROPRIO_SIZE (52) for the 12-DoF Go1.
+    n_joints = self._mj_model.nq - 7
+    self._proprio_size = 16 + 2 * n_joints + self._mj_model.nu
+    self._robot_mass = float(self._mj_model.body_subtreemass[
+        self._mj_model.body(consts.ROOT_BODY).id
+    ])
 
     self._lowers, self._uppers = self.mj_model.jnt_range[1:].T
     self._soft_lowers = self._lowers * self._config.soft_joint_pos_limit_factor
@@ -306,7 +343,7 @@ class BridgeCrossing(go1_base.Go1Env):
         "feet_air_time": jp.zeros(4),
         "last_contact": jp.zeros(4, dtype=bool),
         "swing_peak": jp.zeros(4),
-        "obs_history": jp.zeros((self._config.history_len - 1, _PROPRIO_SIZE)),
+        "obs_history": jp.zeros((self._config.history_len - 1, self._proprio_size)),
         # Frontier tracker: max x reached this episode (monotone).
         "max_x_reached": qpos[0],
         # Spawn x: used by step() to reset max_x_reached on episode boundary.
@@ -316,6 +353,10 @@ class BridgeCrossing(go1_base.Go1Env):
         # Per-episode virtual bridge width for foothold shaping.
         "virtual_hw": virtual_hw,
     }
+    if self._config.push_config.enable:
+      rng, key = jax.random.split(rng)
+      info["rng"] = rng
+      info.update(self._initial_push_info(key))
 
     metrics = {}
     for k in self._config.reward_config.scales.keys():
@@ -344,13 +385,27 @@ class BridgeCrossing(go1_base.Go1Env):
     # Per-step contact fraction for left (FL=1,RL=3) and right (FR=0,RR=2) sides.
     metrics["metric/contact_left"] = jp.zeros(())
     metrics["metric/contact_right"] = jp.zeros(())
+    if self._config.push_config.enable:
+      # |push force| on the trunk this step (N) and push-start events.
+      metrics["metric/push_force"] = jp.zeros(())
+      metrics["metric/push_count"] = jp.zeros(())
 
     obs = self._get_obs(data, info)
     reward, done = jp.zeros(2)
     return mjx_env.State(data, obs, reward, done, metrics, info)
 
   def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
-    motor_targets = self._default_pose + action * self._config.action_scale
+    if self._config.reset_info_on_new_episode and "steps" in state.info:
+      self._reset_episode_info(state.info, state.info["steps"] == 0)
+
+    if self._config.push_config.enable:
+      push_started = state.info["push_wait"] - self.dt <= 0.0
+      push_force = self._update_push(state.info)
+      xfrc = jp.zeros((self.mjx_model.nbody, 6))
+      xfrc = xfrc.at[self._torso_body_id, :3].set(push_force)
+      state = state.replace(data=state.data.replace(xfrc_applied=xfrc))
+
+    motor_targets = self._default_pose + action * self._action_scale
     data = mjx_env.step(
         self.mjx_model, state.data, motor_targets, self.n_substeps
     )
@@ -375,7 +430,7 @@ class BridgeCrossing(go1_base.Go1Env):
 
     obs = self._get_obs(data, state.info)
     if self._config.history_len > 1:
-      current_proprio = obs["state"][:_PROPRIO_SIZE]
+      current_proprio = obs["state"][:self._proprio_size]
       state.info["obs_history"] = jp.concatenate(
           [state.info["obs_history"][1:], current_proprio[None]], axis=0
       )
@@ -424,7 +479,7 @@ class BridgeCrossing(go1_base.Go1Env):
     state.metrics["metric/term_fall"] = failure.astype(jp.float32)
     state.metrics["metric/term_success"] = success.astype(jp.float32)
     state.metrics["metric/abduction_saturation"] = jp.mean(
-        (jp.abs(action[0::3]) > 0.95).astype(jp.float32)
+        (jp.abs(action[0:12:3]) > 0.95).astype(jp.float32)
     )
     state.metrics["metric/max_foot_y"] = jp.max(jp.abs(foot_y))
     state.metrics["metric/virtual_hw"] = state.info["virtual_hw"]
@@ -433,46 +488,118 @@ class BridgeCrossing(go1_base.Go1Env):
     contact_f32 = contact.astype(jp.float32)
     state.metrics["metric/contact_right"] = (contact_f32[0] + contact_f32[2]) / 2.0
     state.metrics["metric/contact_left"] = (contact_f32[1] + contact_f32[3]) / 2.0
+    if self._config.push_config.enable:
+      state.metrics["metric/push_force"] = jp.linalg.norm(push_force)
+      state.metrics["metric/push_count"] = push_started.astype(jp.float32)
 
     # ── Episode-boundary resets (fix BraxAutoResetWrapper info leak) ──────────
     # `done` catches failure/success. `teleported` catches EpisodeWrapper timeouts
     # (AutoReset restores spawn data/obs but not info, so we must clean up both).
     boundary = done | teleported
-    state.info["rng"], key = jax.random.split(state.info["rng"])
+    self._reset_episode_info(state.info, boundary)
+
+    done = done.astype(reward.dtype)
+    return state.replace(data=data, obs=obs, reward=reward, done=done)
+
+  def _reset_episode_info(
+      self, info: dict[str, Any], boundary: jax.Array
+  ) -> None:
+    """Re-initialise per-episode info entries where `boundary` is True."""
+    info["rng"], key = jax.random.split(info["rng"])
     vhw_min = min(self._config.virtual_hw_min, self._config.bridge_half_width)
     new_vhw = jax.random.uniform(
         key, (),
         minval=vhw_min,
         maxval=self._config.bridge_half_width,
     )
-    state.info["virtual_hw"] = jp.where(boundary, new_vhw, state.info["virtual_hw"])
-    state.info["max_x_reached"] = jp.where(
-        boundary, state.info["init_x"], state.info["max_x_reached"]
+    info["virtual_hw"] = jp.where(boundary, new_vhw, info["virtual_hw"])
+    info["max_x_reached"] = jp.where(
+        boundary, info["init_x"], info["max_x_reached"]
     )
-    state.info["unpaid_progress"] = jp.where(
-        boundary, jp.zeros(()), state.info["unpaid_progress"]
+    info["unpaid_progress"] = jp.where(
+        boundary, jp.zeros(()), info["unpaid_progress"]
     )
-    state.info["feet_air_time"] = jp.where(
-        boundary, jp.zeros(4), state.info["feet_air_time"]
+    info["feet_air_time"] = jp.where(
+        boundary, jp.zeros(4), info["feet_air_time"]
     )
-    state.info["last_contact"] = jp.where(
-        boundary, jp.zeros(4, dtype=bool), state.info["last_contact"]
+    info["last_contact"] = jp.where(
+        boundary, jp.zeros(4, dtype=bool), info["last_contact"]
     )
-    state.info["swing_peak"] = jp.where(
-        boundary, jp.zeros(4), state.info["swing_peak"]
+    info["swing_peak"] = jp.where(
+        boundary, jp.zeros(4), info["swing_peak"]
     )
-    state.info["last_act"] = jp.where(
-        boundary, jp.zeros_like(state.info["last_act"]), state.info["last_act"]
+    info["last_act"] = jp.where(
+        boundary, jp.zeros_like(info["last_act"]), info["last_act"]
     )
-    state.info["last_last_act"] = jp.where(
-        boundary, jp.zeros_like(state.info["last_last_act"]), state.info["last_last_act"]
+    info["last_last_act"] = jp.where(
+        boundary, jp.zeros_like(info["last_last_act"]), info["last_last_act"]
     )
-    state.info["obs_history"] = jp.where(
-        boundary, jp.zeros_like(state.info["obs_history"]), state.info["obs_history"]
+    info["obs_history"] = jp.where(
+        boundary, jp.zeros_like(info["obs_history"]), info["obs_history"]
+    )
+    if self._config.push_config.enable:
+      info["rng"], key = jax.random.split(info["rng"])
+      fresh = self._initial_push_info(key)
+      for k, v in fresh.items():
+        info[k] = jp.where(boundary, v, info[k])
+
+  # ── Random pushes ─────────────────────────────────────────────────────────
+
+  def _initial_push_info(self, key: jax.Array) -> dict[str, jax.Array]:
+    pc = self._config.push_config
+    return {
+        # Seconds until the next push starts.
+        "push_wait": jax.random.uniform(
+            key, (), minval=pc.interval[0], maxval=pc.interval[1]
+        ),
+        # Seconds since the current push started (large = no push active).
+        "push_t": jp.array(1e3),
+        "push_dur": jp.array(0.0),
+        # Peak force vector (N) of the current half-sine pulse.
+        "push_peak": jp.zeros(3),
+    }
+
+  def _update_push(self, info: dict[str, Any]) -> jax.Array:
+    """Advance the push schedule by one control step; return the trunk force."""
+    pc = self._config.push_config
+    info["rng"], k_dur, k_dv, k_sign, k_yaw, k_wait = jax.random.split(
+        info["rng"], 6
+    )
+    info["push_wait"] = info["push_wait"] - self.dt
+    start = info["push_wait"] <= 0.0
+
+    dur = jax.random.uniform(
+        k_dur, (), minval=pc.duration[0], maxval=pc.duration[1]
+    )
+    impulse = jax.random.uniform(
+        k_dv, (), minval=pc.impulse[0], maxval=pc.impulse[1]
+    )
+    sign = jp.where(jax.random.bernoulli(k_sign), 1.0, -1.0)
+    spread = jp.deg2rad(pc.lateral_spread_deg)
+    yaw = sign * jp.pi / 2 + jax.random.uniform(
+        k_yaw, (), minval=-spread, maxval=spread
+    )
+    direction = jp.array([jp.cos(yaw), jp.sin(yaw), 0.0])
+    # Half-sine pulse:  impulse = F_peak * 2T / pi.
+    peak = impulse * jp.pi / (2.0 * dur) * direction
+    wait = jax.random.uniform(
+        k_wait, (), minval=pc.interval[0], maxval=pc.interval[1]
     )
 
-    done = done.astype(reward.dtype)
-    return state.replace(data=data, obs=obs, reward=reward, done=done)
+    info["push_t"] = jp.where(start, 0.0, info["push_t"])
+    info["push_dur"] = jp.where(start, dur, info["push_dur"])
+    info["push_peak"] = jp.where(start, peak, info["push_peak"])
+    info["push_wait"] = jp.where(start, wait + dur, info["push_wait"])
+
+    t_mid = info["push_t"] + 0.5 * self.dt
+    active = t_mid < info["push_dur"]
+    profile = jp.where(
+        active,
+        jp.sin(jp.pi * t_mid / jp.maximum(info["push_dur"], 1e-6)),
+        0.0,
+    )
+    info["push_t"] = info["push_t"] + self.dt
+    return profile * info["push_peak"]
 
   def _get_failure(self, data: mjx.Data) -> jax.Array:
     tilt = self.get_upvector(data)[-1] < 0.5  # terminate at ~60° tilt
@@ -590,6 +717,12 @@ class BridgeCrossing(go1_base.Go1Env):
         info["feet_air_time"],                    # 4
         jp.array([data.qpos[0]]),                 # 1
     ])
+    if self._config.push_config.enable:
+      # Critic-only: current external push force on the trunk (N / 100).
+      privileged_state = jp.hstack([
+          privileged_state,
+          data.xfrc_applied[self._torso_body_id, :3] / 100.0,
+      ])
 
     return {"state": state, "privileged_state": privileged_state}
 
@@ -654,8 +787,8 @@ class BridgeCrossing(go1_base.Go1Env):
         "feet_slip": self._cost_feet_slip(data, contact_filt),
         "feet_clearance": self._cost_feet_clearance(data),
         "feet_height": self._cost_feet_height(info["swing_peak"], first_contact),
-        "pose": self._reward_pose(data.qpos[7:]),
-        "dof_pos_limits": self._cost_joint_pos_limits(data.qpos[7:]),
+        "pose": self._reward_pose(data.qpos[7:19]),
+        "dof_pos_limits": self._cost_joint_pos_limits(data.qpos[7:19]),
     }
 
   def _reward_forward_vel(self, local_vel: jax.Array) -> jax.Array:
@@ -739,11 +872,12 @@ class BridgeCrossing(go1_base.Go1Env):
 
   def _reward_pose(self, qpos: jax.Array) -> jax.Array:
     weight = jp.array([0.1, 1.0, 0.1] * 4)
-    return jp.exp(-jp.sum(jp.square(qpos - self._default_pose) * weight))
+    return jp.exp(-jp.sum(jp.square(qpos - self._default_pose[:12]) * weight))
 
   def _cost_joint_pos_limits(self, qpos: jax.Array) -> jax.Array:
-    out_of_limits = -jp.clip(qpos - self._soft_lowers, None, 0.0)
-    out_of_limits += jp.clip(qpos - self._soft_uppers, 0.0, None)
+    # Leg joints only; extra joints (e.g. a tail) handle their own limits.
+    out_of_limits = -jp.clip(qpos - self._soft_lowers[:12], None, 0.0)
+    out_of_limits += jp.clip(qpos - self._soft_uppers[:12], 0.0, None)
     return jp.sum(out_of_limits)
 
   def _cost_foot_off_bridge(
