@@ -128,3 +128,34 @@ notail  X_B_w006_p20_at_w010     J50=2.304635761589404
 notail  X_B_w006_p20_at_w020     J50=0.0
 ```
 Notes: all X_*_at_w020 cross-evals give J50=0.0 for every condition (0.06 m-trained policies don't cross the 0.20 m beam at all -> not informative). Headline comparisons: B_w006 active 3.51 / locked 3.30 / notail 1.31; B_w010 active 4.87 / locked 3.75 / notail 2.49; X_B_w006_p20_at_w010 active 3.46 / locked 3.49 / notail 2.30. Locked A07_w010 = 0 (never learned 0.10 m). Committing manifests, eval JSONs, STATUS.md only.
+
+## Fine eval (2026-11-11 19:42:51)
+- Coordinator pushed aeb78d5 (run_tail_push_fine_eval.sh). No partial eval_fine/ existed. Launched detached (setsid): GPU0 active then notail (active.fine_eval.log, notail.fine_eval.log); GPU1 locked (locked.fine_eval.log). Output: <cond>/eval_fine/*.json. ~15 min per condition. Will commit eval_fine JSONs + STATUS.md and push when all three finish.
+
+- 2026-11-11 20:13:00: fine evals complete for all three (8 JSONs each in <cond>/eval_fine/, no failures). J50 (fine, 0.5 N*s grid, 512 trials):
+```
+active  A04_w020                 J50=7.528301886792453
+active  A07_w010                 J50=5.2
+active  A11_w006                 J50=4.870689655172414
+active  B_w006                   J50=3.7836538461538463
+active  B_w010                   J50=4.75
+active  B_w020                   J50=8.085365853658537
+active  X_A11_at_w010            J50=5.383333333333334
+active  X_B_w006_p20_at_w010     J50=3.812182741116751
+locked  A04_w020                 J50=6.819078947368421
+locked  A07_w010                 J50=0.0
+locked  A11_w006                 J50=4.441717791411043
+locked  B_w006                   J50=3.400943396226415
+locked  B_w010                   J50=3.713235294117647
+locked  B_w020                   J50=7.377358490566038
+locked  X_A11_at_w010            J50=4.666666666666667
+locked  X_B_w006_p20_at_w010     J50=3.6153846153846154
+notail  A04_w020                 J50=5.375739644970414
+notail  A07_w010                 J50=2.801800514432695
+notail  A11_w006                 J50=1.7492581602373887
+notail  B_w006                   J50=1.7901639344262295
+notail  B_w010                   J50=2.1873847380750635
+notail  B_w020                   J50=4.682203389830509
+notail  X_A11_at_w010            J50=1.8136200716845878
+notail  X_B_w006_p20_at_w010     J50=2.1156693563420417
+```
