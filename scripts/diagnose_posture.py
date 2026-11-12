@@ -8,6 +8,8 @@ separately for steps on platform A (x < 0) and on the beam (0.5 < x < 3.5):
   joint_dev   mean joint angle minus the home keyframe, per joint (rad)
   com_x_rel   whole-robot CoM x minus mean foot x (m, + = CoM ahead of feet)
   rewards     mean per-step value of every reward term (already scaled)
+  contact / foot_h / foot_x_rel  per foot: contact fraction, height above
+              the surface (m), x relative to the trunk (m)
 
 Example:
   python scripts/diagnose_posture.py --env_name Go1BridgeCrossingTail \
@@ -76,7 +78,10 @@ def main() -> None:
           if k.startswith("reward/")}
     out = {"pitch_deg": pitch, "roll_deg": roll, "height_m": d.qpos[2] - 0.5,
            "com_x_rel": com_x - feet_x, "x": d.qpos[0],
-           "joints": d.qpos[7:19] - default}
+           "joints": d.qpos[7:19] - default,
+           "contact": state.info["last_contact"].astype(jp.float32),
+           "foot_h": d.site_xpos[feet, 2] - 0.5,
+           "foot_x_rel": d.site_xpos[feet, 0] - d.qpos[0]}
     if d.qpos.shape[0] > 19:
       out["tail_deg"] = jp.rad2deg(d.qpos[19])
     return out, rw
@@ -123,6 +128,8 @@ def main() -> None:
         res[k] = {"mean": float(cat[k].mean()), "std": float(cat[k].std()),
                   "p10": float(np.percentile(cat[k], 10)),
                   "p90": float(np.percentile(cat[k], 90))}
+    for k in ("contact", "foot_h", "foot_x_rel"):
+      res[f"{k}_FR_FL_RR_RL"] = np.round(cat[k].mean(0), 3).tolist()
     res["joint_dev_rad"] = dict(zip(JOINTS, np.round(cat["joints"].mean(0), 3).tolist()))
     res["rewards"] = {k: float(np.concatenate(v).mean()) for k, v in rew.items()}
     return res
