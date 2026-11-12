@@ -69,6 +69,14 @@ def default_config() -> config_dict.ConfigDict:
     config.reward_config.scales.tail_overtravel = -500.0
     config.reward_config.scales.tail_thermal = -1.0
     config.reward_config.scales.tail_energy = -0.001
+    # Level-walking tail terms (off by default; see level-walking notes).
+    # tail_center: tail angle^2 (rad^2) -- discourages parking the tail to one
+    #   side as a static counterweight.
+    # tail_roll_assist: positive power the tail's reaction torque removes from
+    #   trunk roll, max(tau * omega_x, 0) capped at tail_assist_cap (W).
+    config.reward_config.scales.tail_center = 0.0
+    config.reward_config.scales.tail_roll_assist = 0.0
+    config.tail_assist_cap = 10.0
   return config
 
 
@@ -188,4 +196,11 @@ class BridgeCrossingTail(bridge.BridgeCrossing):
         jp.sqrt(info["tail_tau_sq_ema"]) - self._config.tail_rated_torque, 0.0
     )
     rewards["tail_energy"] = jp.abs(qd * tau)
+    rewards["tail_center"] = jp.square(q)
+    # The motor applies tau to the tail and -tau to the trunk about the trunk
+    # x axis, so the tail opposes the trunk's roll rate when tau * omega_x > 0.
+    roll_rate = self.get_gyro(data)[0]
+    rewards["tail_roll_assist"] = jp.clip(
+        tau * roll_rate, 0.0, self._config.tail_assist_cap
+    )
     return rewards

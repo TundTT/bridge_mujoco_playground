@@ -34,6 +34,7 @@ _HM_Y_MIN, _HM_Y_MAX = -1.0, 1.0
 _HM_CELL = 0.03
 _HM_PATCH = 13
 _FOOT_RADIUS = 0.023  # Go1 foot collision sphere radius (m)
+_SURFACE_Z = 0.5  # top of both platforms and of the box bridge (m)
 
 # linvel(3)+gyro(3)+gravity(3)+joint_angles(12)+joint_vel(12)+last_act(12)+x_progress(1)+foot_y(4)+trunk_y(1)+bridge_hw(1)
 _PROPRIO_SIZE = 52
@@ -71,6 +72,14 @@ def default_config() -> config_dict.ConfigDict:
       # episode (info["steps"] == 0, zeroed by the wrapper) re-initialises the
       # per-episode info. Off by default so existing runs stay reproducible.
       reset_info_on_new_episode=False,
+      # Level-walking options (off by default so existing runs are unchanged).
+      # Box bridge: feet_clearance / feet_height measured foot height from the
+      # world floor, so every swing looked ~0.5 m high and every touchdown was
+      # penalised. True measures from the 0.5 m walking surface instead.
+      foot_height_from_surface=False,
+      # Terminate as a failure if the trunk pitches more than this (deg).
+      # 0 = off (only the generic ~60 deg tilt check applies).
+      pitch_terminate_deg=0.0,
       # Random external pushes on the trunk (disabled by default so existing
       # runs are unchanged). Each push is a half-sine force pulse on the trunk
       # with a sampled impulse in N*s, so the same "shove" is applied whatever
@@ -102,6 +111,9 @@ def default_config() -> config_dict.ConfigDict:
           max_foot_height=0.08,
           scales=config_dict.create(
               orientation=-5.0,
+              # Squared trunk pitch / roll angle (rad^2). Off by default.
+              pitch=0.0,
+              roll=0.0,
               alive=0.0,
               torques=-0.0002,
               action_rate=-0.01,
@@ -250,6 +262,21 @@ class BridgeCrossing(go1_base.Go1Env):
     foot_pos = data.site_xpos[self._feet_site_id]
     support_z = self._round_support_surface_z(foot_pos[:, 0], foot_pos[:, 1])
     return foot_pos[:, 2] - support_z
+
+  def _foot_height(self, data: mjx.Data) -> jax.Array:
+    """Foot site height used by the swing-height terms (feet_clearance/height)."""
+    if self._config.bridge_shape == "round":
+      return self._foot_height_above_support(data)
+    z = data.site_xpos[self._feet_site_id, 2]
+    if self._config.foot_height_from_surface:
+      return z - _SURFACE_Z
+    return z  # legacy: height above the world floor
+
+  def _pitch_roll(self, data: mjx.Data) -> tuple[jax.Array, jax.Array]:
+    """Trunk pitch (+ = nose down) and roll (rad) from gravity in the IMU frame."""
+    g = self.get_gravity(data)
+    return (jp.arcsin(jp.clip(g[0], -1.0, 1.0)),
+            jp.arcsin(jp.clip(g[1], -1.0, 1.0)))
 
   def _post_init(self) -> None:
     self._init_q = jp.array(self._mj_model.keyframe("home").qpos)
@@ -422,10 +449,7 @@ class BridgeCrossing(go1_base.Go1Env):
     first_contact = (state.info["feet_air_time"] > 0.0) * contact_filt
     state.info["feet_air_time"] += self.dt
 
-    if self._config.bridge_shape == "round":
-      p_fz = self._foot_height_above_support(data)
-    else:
-      p_fz = data.site_xpos[self._feet_site_id, -1]
+    p_fz = self._foot_height(data)
     state.info["swing_peak"] = jp.maximum(state.info["swing_peak"], p_fz)
 
     obs = self._get_obs(data, state.info)
@@ -605,7 +629,11 @@ class BridgeCrossing(go1_base.Go1Env):
     tilt = self.get_upvector(data)[-1] < 0.5  # terminate at ~60° tilt
     height = data.qpos[2] < self._config.fall_threshold
     nan_explosion = ~jp.isfinite(data.qpos).all()
-    return tilt | height | nan_explosion
+    failure = tilt | height | nan_explosion
+    if self._config.pitch_terminate_deg > 0.0:
+      pitch, _ = self._pitch_roll(data)
+      failure |= jp.abs(pitch) > jp.deg2rad(self._config.pitch_terminate_deg)
+    return failure
 
   def _get_success(self, data: mjx.Data) -> jax.Array:
     # Robot has confidently crossed — reached halfway into Platform B.
@@ -761,8 +789,12 @@ class BridgeCrossing(go1_base.Go1Env):
     global_linvel = self.get_global_linvel(data)
     global_angvel = self.get_global_angvel(data)
 
+    pitch, roll = self._pitch_roll(data)
+
     return {
         "orientation": self._cost_orientation(self.get_upvector(data)),
+        "pitch": jp.square(pitch),
+        "roll": jp.square(roll),
         "alive": jp.ones(()),
         "torques": self._cost_torques(data.actuator_force),
         "action_rate": self._cost_action_rate(
@@ -857,10 +889,7 @@ class BridgeCrossing(go1_base.Go1Env):
     feet_vel = data.sensordata[self._foot_linvel_sensor_adr]
     vel_xy = feet_vel[..., :2]
     vel_norm = jp.sqrt(jp.linalg.norm(vel_xy, axis=-1))
-    if self._config.bridge_shape == "round":
-      foot_z = self._foot_height_above_support(data)
-    else:
-      foot_z = data.site_xpos[self._feet_site_id, 2]
+    foot_z = self._foot_height(data)
     delta = jp.abs(foot_z - self._config.reward_config.max_foot_height)
     return jp.sum(delta * vel_norm)
 
