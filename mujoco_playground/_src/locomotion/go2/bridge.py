@@ -31,8 +31,7 @@ from typing import Any, Dict, Optional, Union
 
 from ml_collections import config_dict
 
-from mujoco_playground._src.locomotion.go1 import bridge
-from mujoco_playground._src.locomotion.go1 import bridge_tail
+from mujoco_playground._src.locomotion.go1 import bridge, bridge_tail
 from mujoco_playground._src.locomotion.go2 import base as go2_base
 from mujoco_playground._src.locomotion.go2 import go2_constants as consts
 
