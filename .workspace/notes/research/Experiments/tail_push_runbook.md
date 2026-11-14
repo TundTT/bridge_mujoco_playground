@@ -63,3 +63,21 @@ Update it after launching and whenever a stage finishes or something breaks.
   `results/tail_push/**/eval/*.json` and `STATUS.md` (NOT logs or checkpoints)
   to `tail-push-experiment` and `git push origin tail-push-experiment`.
   Never push to main; never force-push.
+
+## Go2 rerun (2026-11-13)
+Same experiment on the Unitree Go2 (`Go2BridgeCrossing`, `Go2BridgeCrossingTail`,
+code in `mujoco_playground/_src/locomotion/go2/`). Rewards and curriculum are the
+same as the Go1 run except: foot height measured from the deck, per-episode info
+reset, Kp 50 (the Go2 sags at Kp 35), and a pitch penalty with a +/-10 deg dead band
+(scale -75). Results go to `results/tail_push_go2/<cond>/`; WandB project
+`bridge_tail_push_go2`. Phase C now also runs the 0.10 m cross-width evals and the
+posture diagnostics, and evals use the fine sweep (0.5 N*s, 512 trials).
+```sh
+cd ~/bridge_tail_push && git pull --ff-only origin tail-push-experiment
+mkdir -p results/tail_push_go2
+ROBOT=go2 CONDITION=active CUDA_VISIBLE_DEVICES=0 setsid nohup ./run_tail_push_experiment.sh > results/tail_push_go2/active.launcher.log 2>&1 &
+ROBOT=go2 CONDITION=locked CUDA_VISIBLE_DEVICES=1 setsid nohup ./run_tail_push_experiment.sh > results/tail_push_go2/locked.launcher.log 2>&1 &
+ROBOT=go2 CONDITION=notail CUDA_VISIBLE_DEVICES=0 setsid nohup ./run_tail_push_experiment.sh > results/tail_push_go2/notail.launcher.log 2>&1 &
+```
+When done, commit `results/tail_push_go2/**/{manifest.tsv,eval/*.json,posture/*.json}`
+and `STATUS.md` (not logs/checkpoints) and push to `tail-push-experiment`.

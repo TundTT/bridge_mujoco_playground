@@ -33,7 +33,6 @@ _HM_X_MIN, _HM_X_MAX = -3.0, 7.0
 _HM_Y_MIN, _HM_Y_MAX = -1.0, 1.0
 _HM_CELL = 0.03
 _HM_PATCH = 13
-_FOOT_RADIUS = 0.023  # Go1 foot collision sphere radius (m)
 _SURFACE_Z = 0.5  # top of both platforms and of the box bridge (m)
 
 # linvel(3)+gyro(3)+gravity(3)+joint_angles(12)+joint_vel(12)+last_act(12)+x_progress(1)+foot_y(4)+trunk_y(1)+bridge_hw(1)
@@ -77,6 +76,11 @@ def default_config() -> config_dict.ConfigDict:
       # world floor, so every swing looked ~0.5 m high and every touchdown was
       # penalised. True measures from the 0.5 m walking surface instead.
       foot_height_from_surface=False,
+      # Foot collision sphere radius (m): Go1 0.023, Go2 0.0175.
+      foot_radius=0.023,
+      # Pitch reward: only |pitch| beyond this many degrees is penalised, so
+      # the trunk may pitch a little for balance. 0 = plain squared pitch.
+      pitch_deadband_deg=0.0,
       # Terminate as a failure if the trunk pitches more than this (deg).
       # 0 = off (only the generic ~60 deg tilt check applies).
       pitch_terminate_deg=0.0,
@@ -147,6 +151,10 @@ def default_config() -> config_dict.ConfigDict:
 class BridgeCrossing(go1_base.Go1Env):
   """Cross the narrow bridge from Platform A to Platform B."""
 
+  # Robot-specific names (overridden by the Go2 envs).
+  _root_body_name = consts.ROOT_BODY
+  _default_xml = consts.FEET_ONLY_BRIDGE_XML
+
   def __init__(
       self,
       config: config_dict.ConfigDict = default_config(),
@@ -154,7 +162,7 @@ class BridgeCrossing(go1_base.Go1Env):
       xml_path: Optional[str] = None,
   ):
     super().__init__(
-        xml_path=xml_path or consts.FEET_ONLY_BRIDGE_XML.as_posix(),
+        xml_path=xml_path or self._default_xml.as_posix(),
         config=config,
         config_overrides=config_overrides,
     )
@@ -290,14 +298,14 @@ class BridgeCrossing(go1_base.Go1Env):
     n_joints = self._mj_model.nq - 7
     self._proprio_size = 16 + 2 * n_joints + self._mj_model.nu
     self._robot_mass = float(self._mj_model.body_subtreemass[
-        self._mj_model.body(consts.ROOT_BODY).id
+        self._mj_model.body(self._root_body_name).id
     ])
 
     self._lowers, self._uppers = self.mj_model.jnt_range[1:].T
     self._soft_lowers = self._lowers * self._config.soft_joint_pos_limit_factor
     self._soft_uppers = self._uppers * self._config.soft_joint_pos_limit_factor
 
-    self._torso_body_id = self._mj_model.body(consts.ROOT_BODY).id
+    self._torso_body_id = self._mj_model.body(self._root_body_name).id
     self._feet_site_id = np.array(
         [self._mj_model.site(name).id for name in consts.FEET_SITES]
     )
@@ -793,7 +801,9 @@ class BridgeCrossing(go1_base.Go1Env):
 
     return {
         "orientation": self._cost_orientation(self.get_upvector(data)),
-        "pitch": jp.square(pitch),
+        "pitch": jp.square(jp.maximum(
+            jp.abs(pitch) - jp.deg2rad(self._config.pitch_deadband_deg), 0.0
+        )),
         "roll": jp.square(roll),
         "alive": jp.ones(()),
         "torques": self._cost_torques(data.actuator_force),
@@ -923,7 +933,7 @@ class BridgeCrossing(go1_base.Go1Env):
     hw = self._config.bridge_half_width
     on_platform_a = (foot_x >= -3.0) & (foot_x <= 0.0) & (jp.abs(foot_y) <= 1.0)
     if self._config.bridge_shape == "round":
-      bridge_limit = hw + _FOOT_RADIUS
+      bridge_limit = hw + self._config.foot_radius
     else:
       bridge_limit = hw
     on_bridge = (
@@ -945,7 +955,9 @@ class BridgeCrossing(go1_base.Go1Env):
     if self._config.bridge_shape == "round":
       overshoot = jp.maximum(jp.abs(foot_y) - info["virtual_hw"], 0.0)
     else:
-      overshoot = jp.maximum(jp.abs(foot_y) + _FOOT_RADIUS - info["virtual_hw"], 0.0)
+      overshoot = jp.maximum(
+          jp.abs(foot_y) + self._config.foot_radius - info["virtual_hw"], 0.0
+      )
     return jp.sum(overshoot)
 
   def _cost_feet_stale_air(self, air_time: jax.Array) -> jax.Array:

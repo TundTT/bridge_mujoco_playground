@@ -191,16 +191,21 @@ def main() -> None:
     print(json.dumps(row), flush=True)
 
   # Critical impulse: first crossing of survive_rate below 0.5.
+  # J50 stays None if most episodes ended before reaching the push point
+  # (that measures "cannot walk here", not push tolerance).
   j50 = None
-  if results and results[0]["survive_rate"] < 0.5:
+  valid = bool(results) and results[0]["n_pushed"] >= 0.5 * results[0]["n_trials"]
+  if valid and results[0]["survive_rate"] < 0.5:
     j50 = 0.0  # fails even with the weakest push in the sweep
-  for a, b in zip(results, results[1:]) if j50 is None else []:
-    if a["survive_rate"] >= 0.5 > b["survive_rate"]:
-      fa, fb = a["survive_rate"], b["survive_rate"]
-      j50 = a["impulse_Ns"] + (fa - 0.5) / (fa - fb) * (b["impulse_Ns"] - a["impulse_Ns"])
-      break
-  if j50 is None and results and results[-1]["survive_rate"] >= 0.5:
-    j50 = float("inf")  # never dropped below 50% within the sweep
+  elif valid:
+    for a, b in zip(results, results[1:]):
+      if a["survive_rate"] >= 0.5 > b["survive_rate"]:
+        fa, fb = a["survive_rate"], b["survive_rate"]
+        j50 = a["impulse_Ns"] + (fa - 0.5) / (fa - fb) * (
+            b["impulse_Ns"] - a["impulse_Ns"])
+        break
+    else:
+      j50 = float("inf")  # never dropped below 50% within the sweep
 
   summary = {
       "env_name": args.env_name,

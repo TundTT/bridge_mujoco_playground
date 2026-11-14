@@ -48,7 +48,7 @@ class Go1Env(mjx_env.MjxEnv):
   ) -> None:
     super().__init__(config, config_overrides)
 
-    self._model_assets = get_assets()
+    self._model_assets = self._load_assets()
     self._mj_model = mujoco.MjModel.from_xml_string(
         epath.Path(xml_path).read_text(), assets=self._model_assets
     )
@@ -73,6 +73,10 @@ class Go1Env(mjx_env.MjxEnv):
         self._mj_model.sensor(f"{geom}_floor_found").id
         for geom in consts.FEET_GEOMS
     ]
+
+  def _load_assets(self) -> Dict[str, bytes]:
+    """Mesh/XML assets for the robot model (overridden by other robots)."""
+    return get_assets()
 
   # Sensor readings.
 

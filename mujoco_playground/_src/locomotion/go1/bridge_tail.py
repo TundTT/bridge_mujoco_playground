@@ -83,15 +83,18 @@ def default_config() -> config_dict.ConfigDict:
 class BridgeCrossingTail(bridge.BridgeCrossing):
   """Cross the narrow bridge with an actuated roll tail under random pushes."""
 
+  _default_tail_xml = consts.FEET_ONLY_BRIDGE_TAIL_XML
+
   def __init__(
       self,
       config: config_dict.ConfigDict = default_config(),
       config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None,
+      xml_path: Optional[str] = None,
   ):
     super().__init__(
         config=config,
         config_overrides=config_overrides,
-        xml_path=consts.FEET_ONLY_BRIDGE_TAIL_XML.as_posix(),
+        xml_path=xml_path or self._default_tail_xml.as_posix(),
     )
     if self._config.tail_mode not in ("active", "locked"):
       raise ValueError(f"Unsupported tail_mode: {self._config.tail_mode}")

@@ -11,6 +11,7 @@ J50 = impulse where survival first drops below 50% (linear interpolation).
 The CI comes from re-computing J50 on the Wilson 95% bounds of each point.
 
 Usage: python scripts/analyze_tail_push.py [--root results/tail_push]
+       python scripts/analyze_tail_push.py --root results/tail_push_go2
 """
 
 import argparse
@@ -188,8 +189,10 @@ def _j50_table(evals, before_key, after_key):
           + " |")
   out = [head, "|---|" + "---|" * len(CONDITIONS)]
   for tag, width in WIDTHS:
-    cells = [f"{_fmt(j50_ci(evals.get((c, before_key(tag)))))} → "
-             f"{_fmt(j50_ci(evals.get((c, after_key(tag)))))}"
+    def cell(e):
+      return _fmt(j50_ci(e)) if e else "–"
+    cells = [f"{cell(evals.get((c, before_key(tag))))} → "
+             f"{cell(evals.get((c, after_key(tag))))}"
              for c, *_ in CONDITIONS]
     out.append(f"| {width:.2f} m | " + " | ".join(cells) + " |")
   return out

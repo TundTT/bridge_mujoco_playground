@@ -1,0 +1,82 @@
+<mujoco model="go2 bridge scene with tail">
+  <include file="go2_mjx_feetonly_tail.xml"/>
+
+  <!--
+    [INSPECT] CAMERA — verify in viewer that the default view shows both platforms
+    and the full bridge simultaneously. Tune if the scene feels too cramped or too zoomed out.
+      center="x y z"  — point the camera looks at (x=2 is bridge midpoint)
+      extent          — how far out to zoom; 5 = ~5m radius visible
+      azimuth/elevation (in <visual><global> below) — viewing angle
+  -->
+  <statistic center="2 0 0.5" extent="5" meansize="0.04"/>
+
+  <visual>
+    <headlight diffuse=".8 .8 .8" ambient=".2 .2 .2" specular="1 1 1"/>
+    <rgba force="1 0 0 1"/>
+    <!-- [INSPECT] CAMERA ANGLE — azimuth/elevation set the default viewing angle.
+         Adjust if the bridge is edge-on or the robot is obscured at spawn. -->
+    <global azimuth="120" elevation="-20"/>
+    <map force="0.01"/>
+    <scale forcewidth="0.3" contactwidth="0.5" contactheight="0.2"/>
+    <quality shadowsize="8192"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="1 1 1" rgb2="1 1 1" width="800" height="800"/>
+    <material name="platform" rgba="0.75 0.75 0.75 1" reflectance="0.3"/>
+    <material name="bridge"   rgba="0.85 0.65 0.35 1" reflectance="0.3"/>
+  </asset>
+
+  <default>
+    <default class="terrain">
+      <geom type="box" contype="1" conaffinity="0"/>
+    </default>
+  </default>
+
+  <!--
+    [INSPECT] TERRAIN LAYOUT — verify all three geoms in the viewer:
+      - No visible gap or step at the platform↔bridge seams (x=0 and x=4)
+      - All top surfaces flush at z=0.5m (pos z=0.25 + half-extent z=0.25)
+      - Bridge is centered on y=0 and looks plausibly walkable at 0.4m wide
+    Sizes are HALF-extents: size="X Y Z" means the box spans ±X, ±Y, ±Z from pos.
+    Adjust pos/size together to move or resize — changing one without the other shifts seams.
+  -->
+  <worldbody>
+    <camera name="bridge" pos="1.325 -8.462 5.889" xyaxes="1.000 -0.000 0.000 0.000 0.465 0.885"/>
+    <camera name="follow" mode="trackcom" target="base"
+            pos="-1.996 -0.573 1.097" xyaxes="0.236 -0.972 -0.000 0.320 0.078 0.944"/>
+
+    <!-- platform_a: x = -3 to 0,  full footprint 3m × 2m × 0.5m -->
+    <geom name="platform_a" class="terrain" material="platform"
+          pos="-1.5 0 0.25" size="1.5 1.0 0.25"/>
+    <!-- bridge: x = 0 to 4,  full footprint 4m × 0.4m × 0.5m
+         [INSPECT] y half-extent (0.2 = 0.4m wide) is the curriculum dial — adjust
+         if the default width feels too easy or too hard for early training. -->
+    <geom name="bridge"     class="terrain" material="bridge"
+          pos="2.0  0 0.25" size="2.0 0.2 0.25"/>
+    <!-- platform_b: x = 4 to 7,  full footprint 3m × 2m × 0.5m -->
+    <geom name="platform_b" class="terrain" material="platform"
+          pos="5.5  0 0.25" size="1.5 1.0 0.25"/>
+  </worldbody>
+
+  <include file="sensor_bridge_feet.xml"/>
+
+  <keyframe>
+    <!--
+      [INSPECT] SPAWN POSE — verify in viewer:
+        - Robot is centered on platform_a, not hanging over the edge
+        - Feet are flush with the surface (not floating above or sinking in)
+        - Robot faces +x (toward the bridge), no sideways lean
+        - No joint-limit violations or splayed legs at spawn
+      qpos breakdown:
+        "-0.5 0 0.790"      — root position: x=0.5m before bridge entrance (centered on y=0), z=0.5(surface)+0.290 (Go2 feet just touching at these joint angles)
+        "1 0 0 0"           — quaternion: upright, facing +x
+        "0.1 0.9 -1.8" ×4  — hip/thigh/knee angles for each leg (same as the Go1 bridge runs)
+        "0"                — tail_joint: tail pointing straight up
+      If the robot sinks or floats, adjust z (third number). If legs splay, adjust joint angles.
+    -->
+    <key name="home"
+      qpos="-0.5 0 0.790  1 0 0 0  0.1 0.9 -1.8 -0.1 0.9 -1.8 0.1 0.9 -1.8 -0.1 0.9 -1.8  0"
+      ctrl="0.1 0.9 -1.8 -0.1 0.9 -1.8 0.1 0.9 -1.8 -0.1 0.9 -1.8  0"/>
+  </keyframe>
+</mujoco>

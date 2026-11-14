@@ -1,0 +1,264 @@
+<mujoco model="go2 feet only with tail">
+  <!--
+    Unitree Go2 for the MJX bridge tasks, built like go1/xmls/go1_mjx_feetonly.xml:
+      - kinematics, masses, inertias and joint ranges from mujoco_menagerie/unitree_go2
+        (go2_mjx.xml), visual meshes from its assets;
+      - only the four foot spheres collide (same contact settings as the Go1 model);
+      - bodies, joints and actuators ordered FR, FL, RR, RL (menagerie order is FL, FR,
+        RL, RR) so joint/action indices match the Go1 envs;
+      - sensor and site names identical to the Go1 model so the env code is shared;
+      - torque limits from the Go2 URDF: hip/thigh 23.7 Nm, knee 45.43 Nm.
+    Gains (Kp/Kd) are set by the env config, as for the Go1.
+  -->
+  <compiler angle="radian" meshdir="assets" autolimits="true"/>
+
+  <option iterations="1" ls_iterations="5" timestep="0.004" integrator="Euler">
+    <flag eulerdamp="disable"/>
+  </option>
+
+  <default>
+    <default class="go2">
+      <!-- Globally disables all collisions; the foot class re-enables them. -->
+      <geom condim="1" contype="0" conaffinity="0"/>
+      <joint axis="0 1 0" armature="0.01" damping="0.5"/>
+      <position forcerange="-23.7 23.7" inheritrange="1" kp="35"/>
+      <default class="abduction">
+        <joint axis="1 0 0" range="-1.0472 1.0472"/>
+      </default>
+      <default class="hip">
+        <joint range="-1.5708 3.4907"/>
+      </default>
+      <default class="knee">
+        <joint range="-2.7227 -0.83776"/>
+        <position forcerange="-45.43 45.43"/>
+      </default>
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0" group="2"/>
+      </default>
+      <default class="foot">
+        <geom type="sphere" size="0.0175" pos="-0.002 0 -0.213" solimp="0.9 .95 0.0175"
+              contype="0" conaffinity="1" group="3"/>
+      </default>
+    </default>
+  </default>
+
+  <asset>
+    <material name="metal" rgba=".9 .95 .95 1"/>
+    <material name="black" rgba="0 0 0 1"/>
+    <material name="white" rgba="1 1 1 1"/>
+    <material name="gray" rgba="0.671705 0.692426 0.774270 1"/>
+    <mesh file="base_0.obj"/>
+    <mesh file="base_1.obj"/>
+    <mesh file="base_2.obj"/>
+    <mesh file="base_3.obj"/>
+    <mesh file="base_4.obj"/>
+    <mesh file="hip_0.obj"/>
+    <mesh file="hip_1.obj"/>
+    <mesh file="thigh_0.obj"/>
+    <mesh file="thigh_1.obj"/>
+    <mesh file="thigh_mirror_0.obj"/>
+    <mesh file="thigh_mirror_1.obj"/>
+    <mesh file="calf_0.obj"/>
+    <mesh file="calf_1.obj"/>
+    <mesh file="calf_mirror_0.obj"/>
+    <mesh file="calf_mirror_1.obj"/>
+    <mesh file="foot.obj"/>
+  </asset>
+
+  <worldbody>
+    <light name="spotlight" mode="targetbodycom" target="base" pos="3 0 4"/>
+    <body name="base" pos="0 0 0.445" childclass="go2">
+      <camera name="track" pos="0.846 -1.3 0.316" xyaxes="0.866 0.500 0.000 -0.171 0.296 0.940" mode="trackcom"/>
+      <camera name="side" pos="0 -1 .3" xyaxes="1 0 0 0 1 2" mode="trackcom"/>
+      <camera name="back" pos="-1 0 .3" xyaxes="0 -1 0 1 0 2" mode="trackcom"/>
+      <inertial pos="0.021112 0 -0.005366" quat="-0.000543471 0.713435 -0.00173769 0.700719" mass="6.921"
+        diaginertia="0.107027 0.0980771 0.0244531"/>
+      <freejoint/>
+      <geom mesh="base_0" material="black" class="visual"/>
+      <geom mesh="base_1" material="black" class="visual"/>
+      <geom mesh="base_2" material="black" class="visual"/>
+      <geom mesh="base_3" material="white" class="visual"/>
+      <geom mesh="base_4" material="gray" class="visual"/>
+      <site name="head" pos="0.3 0 0" rgba="1 0 0 1" size="0.02" group="5"/>
+      <site name="imu" pos="-0.02557 0 0.04232" group="5"/>
+      <body name="FR_hip" pos="0.1934 -0.0465 0">
+        <inertial pos="-0.0054 -0.00194 -0.000105" quat="0.498237 0.505462 0.499245 0.497014" mass="0.678"
+          diaginertia="0.00088403 0.000596003 0.000479967"/>
+        <joint name="FR_hip_joint" class="abduction"/>
+        <geom mesh="hip_0" material="metal" class="visual" quat="4.63268e-05 1 0 0"/>
+        <geom mesh="hip_1" material="gray" class="visual" quat="4.63268e-05 1 0 0"/>
+        <body name="FR_thigh" pos="0 -0.0955 0">
+          <inertial pos="-0.00374 0.0223 -0.0327" quat="0.551623 -0.0200632 0.0847635 0.829533" mass="1.152"
+            diaginertia="0.00594973 0.00584149 0.000878787"/>
+          <joint name="FR_thigh_joint" class="hip"/>
+          <geom mesh="thigh_mirror_0" material="metal" class="visual"/>
+          <geom mesh="thigh_mirror_1" material="gray" class="visual"/>
+          <body name="FR_calf" pos="0 0 -0.213">
+            <inertial pos="0.00629595 0.000622121 -0.141417" quat="0.703508 -0.00450087 0.00154099 0.710672"
+              mass="0.241352" diaginertia="0.0014901 0.00146356 5.31397e-05"/>
+            <joint name="FR_calf_joint" class="knee"/>
+            <geom mesh="calf_mirror_0" material="gray" class="visual"/>
+            <geom mesh="calf_mirror_1" material="black" class="visual"/>
+            <geom pos="0 0 -0.213" mesh="foot" class="visual" material="black"/>
+            <geom name="FR" class="foot"/>
+            <site name="FR" pos="-0.002 0 -0.213" type="sphere" size="0.0175" group="5"/>
+          </body>
+        </body>
+      </body>
+      <body name="FL_hip" pos="0.1934 0.0465 0">
+        <inertial pos="-0.0054 0.00194 -0.000105" quat="0.497014 0.499245 0.505462 0.498237" mass="0.678"
+          diaginertia="0.00088403 0.000596003 0.000479967"/>
+        <joint name="FL_hip_joint" class="abduction"/>
+        <geom mesh="hip_0" material="metal" class="visual"/>
+        <geom mesh="hip_1" material="gray" class="visual"/>
+        <body name="FL_thigh" pos="0 0.0955 0">
+          <inertial pos="-0.00374 -0.0223 -0.0327" quat="0.829533 0.0847635 -0.0200632 0.551623" mass="1.152"
+            diaginertia="0.00594973 0.00584149 0.000878787"/>
+          <joint name="FL_thigh_joint" class="hip"/>
+          <geom mesh="thigh_0" material="metal" class="visual"/>
+          <geom mesh="thigh_1" material="gray" class="visual"/>
+          <body name="FL_calf" pos="0 0 -0.213">
+            <inertial pos="0.00629595 -0.000622121 -0.141417" quat="0.710672 0.00154099 -0.00450087 0.703508"
+              mass="0.241352" diaginertia="0.0014901 0.00146356 5.31397e-05"/>
+            <joint name="FL_calf_joint" class="knee"/>
+            <geom mesh="calf_0" material="gray" class="visual"/>
+            <geom mesh="calf_1" material="black" class="visual"/>
+            <geom pos="0 0 -0.213" mesh="foot" class="visual" material="black"/>
+            <geom name="FL" class="foot"/>
+            <site name="FL" pos="-0.002 0 -0.213" type="sphere" size="0.0175" group="5"/>
+          </body>
+        </body>
+      </body>
+      <body name="RR_hip" pos="-0.1934 -0.0465 0">
+        <inertial pos="0.0054 -0.00194 -0.000105" quat="0.499245 0.497014 0.498237 0.505462" mass="0.678"
+          diaginertia="0.00088403 0.000596003 0.000479967"/>
+        <joint name="RR_hip_joint" class="abduction"/>
+        <geom mesh="hip_0" material="metal" class="visual" quat="2.14617e-09 4.63268e-05 4.63268e-05 -1"/>
+        <geom mesh="hip_1" material="gray" class="visual" quat="2.14617e-09 4.63268e-05 4.63268e-05 -1"/>
+        <body name="RR_thigh" pos="0 -0.0955 0">
+          <inertial pos="-0.00374 0.0223 -0.0327" quat="0.551623 -0.0200632 0.0847635 0.829533" mass="1.152"
+            diaginertia="0.00594973 0.00584149 0.000878787"/>
+          <joint name="RR_thigh_joint" class="hip"/>
+          <geom mesh="thigh_mirror_0" material="metal" class="visual"/>
+          <geom mesh="thigh_mirror_1" material="gray" class="visual"/>
+          <body name="RR_calf" pos="0 0 -0.213">
+            <inertial pos="0.00629595 0.000622121 -0.141417" quat="0.703508 -0.00450087 0.00154099 0.710672"
+              mass="0.241352" diaginertia="0.0014901 0.00146356 5.31397e-05"/>
+            <joint name="RR_calf_joint" class="knee"/>
+            <geom mesh="calf_mirror_0" material="gray" class="visual"/>
+            <geom mesh="calf_mirror_1" material="black" class="visual"/>
+            <geom pos="0 0 -0.213" mesh="foot" class="visual" material="black"/>
+            <geom name="RR" class="foot"/>
+            <site name="RR" pos="-0.002 0 -0.213" type="sphere" size="0.0175" group="5"/>
+          </body>
+        </body>
+      </body>
+      <body name="RL_hip" pos="-0.1934 0.0465 0">
+        <inertial pos="0.0054 0.00194 -0.000105" quat="0.505462 0.498237 0.497014 0.499245" mass="0.678"
+          diaginertia="0.00088403 0.000596003 0.000479967"/>
+        <joint name="RL_hip_joint" class="abduction"/>
+        <geom mesh="hip_0" material="metal" class="visual" quat="4.63268e-05 0 1 0"/>
+        <geom mesh="hip_1" material="gray" class="visual" quat="4.63268e-05 0 1 0"/>
+        <body name="RL_thigh" pos="0 0.0955 0">
+          <inertial pos="-0.00374 -0.0223 -0.0327" quat="0.829533 0.0847635 -0.0200632 0.551623" mass="1.152"
+            diaginertia="0.00594973 0.00584149 0.000878787"/>
+          <joint name="RL_thigh_joint" class="hip"/>
+          <geom mesh="thigh_0" material="metal" class="visual"/>
+          <geom mesh="thigh_1" material="gray" class="visual"/>
+          <body name="RL_calf" pos="0 0 -0.213">
+            <inertial pos="0.00629595 -0.000622121 -0.141417" quat="0.710672 0.00154099 -0.00450087 0.703508"
+              mass="0.241352" diaginertia="0.0014901 0.00146356 5.31397e-05"/>
+            <joint name="RL_calf_joint" class="knee"/>
+            <geom mesh="calf_0" material="gray" class="visual"/>
+            <geom mesh="calf_1" material="black" class="visual"/>
+            <geom pos="0 0 -0.213" mesh="foot" class="visual" material="black"/>
+            <geom name="RL" class="foot"/>
+            <site name="RL" pos="-0.002 0 -0.213" type="sphere" size="0.0175" group="5"/>
+          </body>
+        </body>
+      </body>
+      <!--
+        TAIL: actuated roll pendulum on the back, directly above the whole-body CoM
+        (Go2 CoM is at x = -0.002 in the base frame at the home pose).
+          - Drive: CubeMars AK70-10 (KV100, 10:1). Housing O89 x 50.25 mm, 621 g, sits on
+            the Go2 back (mesh top z = 0.058 at x = 0) with its output axis along trunk x (heading) -> roll.
+            Output axis height = 0.0582 + 0.0445 = 0.1027 m.
+          - Tail at q = 0 points straight up; +q swings the tip toward -y (robot's right).
+          - 0.50 m rod (0.10 kg) + 2.5 lb (1.134 kg) tip mass.
+
+        LIMITS (no hard stops on the real hardware):
+          - Safe operating range is +/-90 deg (tail horizontal). The actuator ctrlrange is
+            clamped to this, so the policy can never *command* past horizontal.
+          - The joint range below (+/-120 deg) is where the rod physically hits the body
+            (Go2 mesh: first contact at 120.5 deg; 33 mm clearance at 90 deg).
+            In sim it acts as the "body" stop; overshoot past 90 deg is to be heavily
+            penalised in the RL reward (contact = hardware damage).
+
+        AK70-10 dynamics (datasheet, 48 V):
+          - peak torque 24.8 Nm  -> actuator forcerange
+          - rated torque 8.3 Nm  -> continuous/thermal limit, to be handled as a reward term
+          - rotor inertia 753.5 g*cm^2 * 10^2 gear ratio  -> armature 0.0075 kg*m^2
+          - back-drive torque 0.48 Nm                     -> frictionloss 0.48
+          - no-load speed 480 rpm (50.3 rad/s); full torque available up to ~44 rad/s.
+            Not expressible in MJCF for a position servo; tail speeds in sim are checked
+            to stay far below this (see notes) and the env can clip if ever needed.
+        Tail geoms inherit contype/conaffinity = 0 from the go2 class (no collisions).
+      -->
+      <body name="tail_motor" pos="-0.002 0 0.1027">
+        <geom name="tail_motor_housing" type="cylinder" size="0.0445 0.025125"
+              quat="0.7071068 0 0.7071068 0" mass="0.621" rgba="0.15 0.15 0.15 1"/>
+        <body name="tail">
+          <joint name="tail_joint" axis="1 0 0" range="-2.0944 2.0944"
+                 armature="0.0075" damping="0" frictionloss="0.48"/>
+          <geom name="tail_rod" type="capsule" fromto="0 0 0 0 0 0.5" size="0.008"
+                mass="0.10" rgba="0.9 0.45 0.1 1"/>
+          <geom name="tail_mass" type="sphere" pos="0 0 0.5" size="0.035"
+                mass="1.134" rgba="0.85 0.1 0.1 1"/>
+          <site name="tail_tip" pos="0 0 0.5" size="0.01" group="5"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position class="abduction" name="FR_hip" joint="FR_hip_joint"/>
+    <position class="hip" name="FR_thigh" joint="FR_thigh_joint"/>
+    <position class="knee" name="FR_calf" joint="FR_calf_joint"/>
+    <position class="abduction" name="FL_hip" joint="FL_hip_joint"/>
+    <position class="hip" name="FL_thigh" joint="FL_thigh_joint"/>
+    <position class="knee" name="FL_calf" joint="FL_calf_joint"/>
+    <position class="abduction" name="RR_hip" joint="RR_hip_joint"/>
+    <position class="hip" name="RR_thigh" joint="RR_thigh_joint"/>
+    <position class="knee" name="RR_calf" joint="RR_calf_joint"/>
+    <position class="abduction" name="RL_hip" joint="RL_hip_joint"/>
+    <position class="hip" name="RL_thigh" joint="RL_thigh_joint"/>
+    <position class="knee" name="RL_calf" joint="RL_calf_joint"/>
+    <!-- Tail actuator (index 12): AK70-10 in MIT/servo mode, modelled as a PD position
+         servo saturating at the 24.8 Nm peak torque. ctrlrange is the +/-90 deg safe
+         envelope, NOT the joint range (+/-120 deg = rod hits trunk).
+         AK driver manual v1.0.18, MIT mode, AK70-10: Kp 0-500, Kd 0-5 Nm*s/rad,
+         torque +/-25 Nm, speed +/-50 rad/s. kv = 5 is the hardware Kd maximum. -->
+    <position name="tail" joint="tail_joint" kp="100" kv="5" forcerange="-24.8 24.8"
+              ctrlrange="-1.5708 1.5708"/>
+  </actuator>
+
+  <sensor>
+    <gyro site="imu" name="gyro"/>
+    <velocimeter site="imu" name="local_linvel"/>
+    <accelerometer site="imu" name="accelerometer"/>
+    <framepos objtype="site" objname="imu" name="position"/>
+    <framezaxis objtype="site" objname="imu" name="upvector"/>
+    <framexaxis objtype="site" objname="imu" name="forwardvector"/>
+    <framelinvel objtype="site" objname="imu" name="global_linvel"/>
+    <frameangvel objtype="site" objname="imu" name="global_angvel"/>
+    <framequat objtype="site" objname="imu" name="orientation"/>
+    <framelinvel objtype="site" objname="FR" name="FR_global_linvel"/>
+    <framelinvel objtype="site" objname="FL" name="FL_global_linvel"/>
+    <framelinvel objtype="site" objname="RR" name="RR_global_linvel"/>
+    <framelinvel objtype="site" objname="RL" name="RL_global_linvel"/>
+    <framepos objtype="site" objname="FR" name="FR_pos" reftype="site" refname="imu"/>
+    <framepos objtype="site" objname="FL" name="FL_pos" reftype="site" refname="imu"/>
+    <framepos objtype="site" objname="RR" name="RR_pos" reftype="site" refname="imu"/>
+    <framepos objtype="site" objname="RL" name="RL_pos" reftype="site" refname="imu"/>
+  </sensor>
+</mujoco>

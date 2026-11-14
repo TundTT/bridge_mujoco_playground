@@ -34,6 +34,7 @@ from mujoco_playground._src.locomotion.go1 import getup as go1_getup
 from mujoco_playground._src.locomotion.go1 import handstand as go1_handstand
 from mujoco_playground._src.locomotion.go1 import joystick as go1_joystick
 from mujoco_playground._src.locomotion.go1 import randomize as go1_randomize
+from mujoco_playground._src.locomotion.go2 import bridge as go2_bridge
 from mujoco_playground._src.locomotion.h1 import inplace_gait_tracking as h1_inplace_gait_tracking
 from mujoco_playground._src.locomotion.h1 import joystick_gait_tracking as h1_joystick_gait_tracking
 from mujoco_playground._src.locomotion.op3 import joystick as op3_joystick
@@ -69,6 +70,8 @@ _envs = {
     ),
     "Go1BridgeCrossing": go1_bridge.BridgeCrossing,
     "Go1BridgeCrossingTail": go1_bridge_tail.BridgeCrossingTail,
+    "Go2BridgeCrossing": go2_bridge.Go2BridgeCrossing,
+    "Go2BridgeCrossingTail": go2_bridge.Go2BridgeCrossingTail,
     "Go1Getup": go1_getup.Getup,
     "Go1Handstand": go1_handstand.Handstand,
     "Go1Footstand": go1_handstand.Footstand,
@@ -105,6 +108,8 @@ _cfgs = {
     "Go1JoystickRoughTerrain": go1_joystick.default_config,
     "Go1BridgeCrossing": go1_bridge.default_config,
     "Go1BridgeCrossingTail": go1_bridge_tail.default_config,
+    "Go2BridgeCrossing": go2_bridge.default_config,
+    "Go2BridgeCrossingTail": go2_bridge.tail_default_config,
     "Go1Getup": go1_getup.default_config,
     "Go1Handstand": go1_handstand.default_config,
     "Go1Footstand": go1_handstand.default_config,

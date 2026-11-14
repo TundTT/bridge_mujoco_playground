@@ -1,0 +1,16 @@
+<mujoco>
+  <sensor>
+    <contact name="FR_floor_found" geom1="FR" geom2="platform_a" reduce="mindist" num="1" data="found"/>
+    <contact name="FL_floor_found" geom1="FL" geom2="platform_a" reduce="mindist" num="1" data="found"/>
+    <contact name="RL_floor_found" geom1="RL" geom2="platform_a" reduce="mindist" num="1" data="found"/>
+    <contact name="RR_floor_found" geom1="RR" geom2="platform_a" reduce="mindist" num="1" data="found"/>
+    <contact name="FR_bridge_found" geom1="FR" geom2="bridge" reduce="mindist" num="1" data="found"/>
+    <contact name="FL_bridge_found" geom1="FL" geom2="bridge" reduce="mindist" num="1" data="found"/>
+    <contact name="RL_bridge_found" geom1="RL" geom2="bridge" reduce="mindist" num="1" data="found"/>
+    <contact name="RR_bridge_found" geom1="RR" geom2="bridge" reduce="mindist" num="1" data="found"/>
+    <contact name="FR_platform_b_found" geom1="FR" geom2="platform_b" reduce="mindist" num="1" data="found"/>
+    <contact name="FL_platform_b_found" geom1="FL" geom2="platform_b" reduce="mindist" num="1" data="found"/>
+    <contact name="RL_platform_b_found" geom1="RL" geom2="platform_b" reduce="mindist" num="1" data="found"/>
+    <contact name="RR_platform_b_found" geom1="RR" geom2="platform_b" reduce="mindist" num="1" data="found"/>
+  </sensor>
+</mujoco>

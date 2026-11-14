@@ -20,8 +20,10 @@
 # Resumable: finished stages are recorded in results/tail_push/<cond>/manifest.tsv
 # and skipped on re-run.
 #
+# Robot: ROBOT=go1 (default, results/tail_push/) or ROBOT=go2 (results/tail_push_go2/).
+#
 # Usage:
-#   CONDITION=active CUDA_VISIBLE_DEVICES=0 ./run_tail_push_experiment.sh
+#   ROBOT=go2 CONDITION=active CUDA_VISIBLE_DEVICES=0 ./run_tail_push_experiment.sh
 #   DRY_RUN=1 CONDITION=locked ./run_tail_push_experiment.sh   # print plan only
 #   SCALE=0.001 ...   # multiply all step budgets (smoke tests)
 #   STOP_AFTER=A04 ... # stop (exit 99) after that stage; re-run resumes
@@ -33,20 +35,31 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${BASE_DIR:-$SCRIPT_DIR}"
 
 CONDITION="${CONDITION:?set CONDITION=active|locked|notail}"
+ROBOT="${ROBOT:-go1}"
 DRY_RUN="${DRY_RUN:-0}"
 SCALE="${SCALE:-1}"
-WANDB_PROJECT="${WANDB_PROJECT:-bridge_tail_push}"
+case "$ROBOT" in
+  go1) ENV_PREFIX=Go1; RESULTS_ROOT="${RESULTS_ROOT:-results/tail_push}"
+       WANDB_PROJECT="${WANDB_PROJECT:-bridge_tail_push}" ;;
+  go2) ENV_PREFIX=Go2; RESULTS_ROOT="${RESULTS_ROOT:-results/tail_push_go2}"
+       WANDB_PROJECT="${WANDB_PROJECT:-bridge_tail_push_go2}" ;;
+  *) echo "unknown ROBOT=$ROBOT" >&2; exit 1 ;;
+esac
 USE_WANDB="${USE_WANDB:-1}"
-EVAL_TRIALS="${EVAL_TRIALS:-256}"
-EVAL_IMPULSES="${EVAL_IMPULSES:-0,2,4,6,8,10,12,14,16,18,20,24,28}"
+# Fine push sweep (0.5 N*s steps where the Go1 J50s fell, 512 trials).
+EVAL_TRIALS="${EVAL_TRIALS:-512}"
+EVAL_IMPULSES="${EVAL_IMPULSES:-0,0.5,1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6,6.5,7,7.5,8,8.5,9,9.5,10,11,12,14,16,20}"
+# Evals share GPUs with training runs; cap their memory (the Go1 run hit a
+# cuSolver error when two evals pre-allocated most of one GPU).
+EVAL_MEM_FRACTION="${EVAL_MEM_FRACTION:-0.15}"
 TRAIN_CMD="${TRAIN_CMD:-train-jax-ppo}"
 PYTHON_CMD="${PYTHON_CMD:-python}"
 MILD_PUSH="[0.0, 4.0]"
 
 case "$CONDITION" in
-  active) ENV_NAME=Go1BridgeCrossingTail; COND_OVR='"tail_mode": "active"' ;;
-  locked) ENV_NAME=Go1BridgeCrossingTail; COND_OVR='"tail_mode": "locked"' ;;
-  notail) ENV_NAME=Go1BridgeCrossing
+  active) ENV_NAME=${ENV_PREFIX}BridgeCrossingTail; COND_OVR='"tail_mode": "active"' ;;
+  locked) ENV_NAME=${ENV_PREFIX}BridgeCrossingTail; COND_OVR='"tail_mode": "locked"' ;;
+  notail) ENV_NAME=${ENV_PREFIX}BridgeCrossing
           COND_OVR='"push_config.enable": true, "reset_info_on_new_episode": true' ;;
   *) echo "unknown CONDITION=$CONDITION" >&2; exit 1 ;;
 esac
@@ -60,7 +73,7 @@ if [ "$DRY_RUN" != "1" ] && [ -z "${SKIP_VENV:-}" ]; then
   export MUJOCO_GL="${MUJOCO_GL:-egl}"
 fi
 
-OUT_DIR="results/tail_push/${CONDITION}"
+OUT_DIR="${RESULTS_ROOT}/${CONDITION}"
 mkdir -p "${OUT_DIR}/logs" "${OUT_DIR}/eval"
 MANIFEST="${OUT_DIR}/manifest.tsv"
 touch "$MANIFEST"
@@ -131,6 +144,7 @@ run_eval() {  # NAME CKPT HW VHW_MIN EP_LEN
   echo "[$CONDITION] eval $name ($ckpt)" >&2
   if [ "$DRY_RUN" = "1" ]; then return 0; fi
   local ovr; ovr=$(overrides_json "$hw" "$vhw" 0.0 0.0)
+  XLA_PYTHON_CLIENT_MEM_FRACTION=$EVAL_MEM_FRACTION \
   $PYTHON_CMD scripts/eval_push_tolerance.py --env_name "$ENV_NAME" \
     --checkpoint "$ckpt" --overrides "$ovr" --episode_length "$ep" \
     --impulses "$EVAL_IMPULSES" --num_trials "$EVAL_TRIALS" \
@@ -175,5 +189,28 @@ run_eval A11_w006 "$W006" 0.030 0.028 2000
 run_eval B_w020   "$B020" 0.100 0.050 1500
 run_eval B_w010   "$B010" 0.050 0.040 1500
 run_eval B_w006   "$B006" 0.030 0.028 2000
+# Cross-width: the 0.06 m-trained policies on the 0.10 m beam, so a stall in
+# one width's curriculum stage cannot show up as push intolerance. (Not on
+# 0.20 m: the policy observes beam width and fails on widths it never saw.)
+run_eval X_A11_at_w010        "$W006" 0.050 0.040 1500
+run_eval X_B_w006_p20_at_w010 "$B006" 0.050 0.040 1500
+
+# Posture diagnostics (pitch, height, per-foot contact) at key stages.
+run_posture() {  # NAME CKPT HW VHW_MIN EP_LEN
+  local name=$1 ckpt=$2 hw=$3 vhw=$4 ep=$5
+  local out="${OUT_DIR}/posture/${name}.json"
+  if [ -f "$out" ] || [ "$DRY_RUN" = "1" ]; then return 0; fi
+  echo "[$CONDITION] posture $name ($ckpt)" >&2
+  local ovr; ovr=$(overrides_json "$hw" "$vhw" 0.0 0.0)
+  XLA_PYTHON_CLIENT_MEM_FRACTION=$EVAL_MEM_FRACTION \
+  $PYTHON_CMD scripts/diagnose_posture.py --env_name "$ENV_NAME" \
+    --checkpoint "$ckpt" --overrides "$ovr" --episode_length "$ep" \
+    --out "$out" > "${OUT_DIR}/logs/posture_${name}.log" 2>&1 \
+    || echo "[$CONDITION] posture $name FAILED - see ${OUT_DIR}/logs/posture_${name}.log" >&2
+}
+run_posture A04_w020 "$W020" 0.100 0.050 1500
+run_posture A07_w010 "$W010" 0.050 0.040 1500
+run_posture A11_w006 "$W006" 0.030 0.028 2000
+run_posture B_w006   "$B006" 0.030 0.028 2000
 
 echo "[$CONDITION] experiment complete. Results in ${OUT_DIR}/" >&2
