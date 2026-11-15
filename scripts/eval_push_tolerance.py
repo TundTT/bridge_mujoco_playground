@@ -47,6 +47,9 @@ def _parse_args() -> argparse.Namespace:
   p.add_argument("--push_duration", type=float, default=0.1, help="s")
   p.add_argument("--trigger_x", type=float, default=1.5,
                  help="Trunk x (m) at which the push is applied. Beam: 0..4.")
+  p.add_argument("--trigger_time", type=float, default=None,
+                 help="If set, push at this time (s) instead of at trigger_x "
+                      "(for the stand task, where the robot does not move).")
   p.add_argument("--num_trials", type=int, default=256,
                  help="Episodes per impulse (even: half left, half right).")
   p.add_argument("--episode_length", type=int, default=1500)
@@ -100,9 +103,12 @@ def main() -> None:
   infer = jax.jit(policy)
 
   @jax.jit
-  def trigger(state, pushed, peak_force):
-    x = state.data.qpos[:, 0]
-    fire = (~pushed) & (x >= args.trigger_x) & (state.done == 0)
+  def trigger(state, pushed, peak_force, t):
+    if args.trigger_time is None:
+      ready = state.data.qpos[:, 0] >= args.trigger_x
+    else:
+      ready = jp.full(n, t >= args.trigger_time)
+    fire = (~pushed) & ready & (state.done == 0)
     peak = peak_force * jp.stack(
         [jp.zeros(n), side, jp.zeros(n)], axis=-1
     )
@@ -133,7 +139,7 @@ def main() -> None:
     has_tail = "metric/tail_angle_abs" in state.metrics
 
     for k in range(args.episode_length):
-      state, pushed, fired = trigger(state, pushed, peak_force)
+      state, pushed, fired = trigger(state, pushed, peak_force, jp.float32(k * dt))
       push_step = jp.where(fired, k, push_step)
       k_act, k_now = jax.random.split(k_act)
       action, _ = infer(state.obs, k_now)
@@ -216,6 +222,7 @@ def main() -> None:
       "robot_mass_kg": env._robot_mass,  # pylint: disable=protected-access
       "push_duration_s": args.push_duration,
       "trigger_x": args.trigger_x,
+      "trigger_time_s": args.trigger_time,
       "critical_impulse_J50_Ns": j50,
       "results": results,
   }

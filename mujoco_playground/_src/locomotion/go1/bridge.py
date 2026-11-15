@@ -84,6 +84,17 @@ def default_config() -> config_dict.ConfigDict:
       # Terminate as a failure if the trunk pitches more than this (deg).
       # 0 = off (only the generic ~60 deg tilt check applies).
       pitch_terminate_deg=0.0,
+      # Task. "cross": walk from Platform A to Platform B (default).
+      # "stand": spawn mid-beam in a narrow stance and stay there; there is no
+      # success event, so episodes end by falling or timeout. Rewards are set
+      # by the caller through reward_config (e.g. alive, stand_pos, and zero
+      # frontier_delta / success / feet_air_time).
+      task="cross",
+      stand_x=2.0,  # spawn x on the beam (beam spans x = 0..4)
+      # Spawn stance: |foot y| = min(frac * bridge_half_width, max) (m).
+      stand_foot_y_frac=0.5,
+      stand_foot_y_max=0.05,
+      stand_yaw_jitter=0.05,  # rad
       # Random external pushes on the trunk (disabled by default so existing
       # runs are unchanged). Each push is a half-sine force pulse on the trunk
       # with a sampled impulse in N*s, so the same "shove" is applied whatever
@@ -119,6 +130,8 @@ def default_config() -> config_dict.ConfigDict:
               pitch=0.0,
               roll=0.0,
               alive=0.0,
+              # Squared x distance from the spawn point (stand task).
+              stand_pos=0.0,
               torques=-0.0002,
               action_rate=-0.01,
               energy=-0.001,
@@ -286,8 +299,54 @@ class BridgeCrossing(go1_base.Go1Env):
     return (jp.arcsin(jp.clip(g[0], -1.0, 1.0)),
             jp.arcsin(jp.clip(g[1], -1.0, 1.0)))
 
+  def _stand_qpos(self) -> np.ndarray:
+    """Home pose moved to the beam, hips adducted so the feet fit on it."""
+    m = self._mj_model
+    d = mujoco.MjData(m)
+    q = np.array(m.keyframe("home").qpos, dtype=np.float64)
+    q[0], q[1] = self._config.stand_x, 0.0
+    target = min(self._config.stand_foot_y_frac * self._config.bridge_half_width,
+                 self._config.stand_foot_y_max)
+    site_ids = [m.site(name).id for name in consts.FEET_SITES]
+
+    def foot_y(leg: int, hip: float) -> float:
+      q[7 + 3 * leg] = hip
+      d.qpos[:] = q
+      mujoco.mj_kinematics(m, d)
+      return float(d.site_xpos[site_ids[leg], 1])
+
+    for leg, name in enumerate(consts.FEET_SITES):
+      jnt = m.jnt_range[1 + 3 * leg]
+      home_hip = q[7 + 3 * leg]
+      sign = np.sign(foot_y(leg, home_hip)) or 1.0  # + for left legs
+      tgt = sign * target
+      lo, hi = jnt[0] * 0.9, jnt[1] * 0.9
+      f_lo, f_hi = foot_y(leg, lo) - tgt, foot_y(leg, hi) - tgt
+      if f_lo * f_hi > 0:
+        raise ValueError(f"stand stance: cannot place {name} at y={tgt:.3f}")
+      for _ in range(50):
+        mid = 0.5 * (lo + hi)
+        f_mid = foot_y(leg, mid) - tgt
+        if f_mid * f_lo > 0:
+          lo, f_lo = mid, f_mid
+        else:
+          hi = mid
+      q[7 + 3 * leg] = 0.5 * (lo + hi)
+
+    # Lower/raise the trunk so the lowest foot sphere rests on the deck.
+    d.qpos[:] = q
+    mujoco.mj_kinematics(m, d)
+    lowest = min(d.site_xpos[i, 2] for i in site_ids)
+    q[2] += _SURFACE_Z + self._config.foot_radius + 0.002 - lowest
+    return q.astype(np.float32)
+
   def _post_init(self) -> None:
-    self._init_q = jp.array(self._mj_model.keyframe("home").qpos)
+    if self._config.task == "stand":
+      self._init_q = jp.array(self._stand_qpos())
+    elif self._config.task == "cross":
+      self._init_q = jp.array(self._mj_model.keyframe("home").qpos)
+    else:
+      raise ValueError(f"Unsupported task: {self._config.task}")
     self._default_pose = jp.array(self._mj_model.keyframe("home").qpos[7:])
     # Per-actuator action scale (subclasses may override individual entries).
     self._action_scale = jp.full(
@@ -340,11 +399,15 @@ class BridgeCrossing(go1_base.Go1Env):
     # Small x/y jitter within platform_a footprint.
     rng, key = jax.random.split(rng)
     dxy = jax.random.uniform(key, (2,), minval=-0.1, maxval=0.1)
+    if self._config.task == "stand":
+      dxy = dxy * jp.array([1.0, 0.0])  # stay centred on the beam
     qpos = qpos.at[0:2].set(qpos[0:2] + dxy)
 
     # Small yaw jitter (±30°) so the policy learns to correct its heading.
     rng, key = jax.random.split(rng)
-    yaw = jax.random.uniform(key, (1,), minval=-0.5, maxval=0.5)
+    max_yaw = (self._config.stand_yaw_jitter if self._config.task == "stand"
+               else 0.5)
+    yaw = jax.random.uniform(key, (1,), minval=-max_yaw, maxval=max_yaw)
     quat = math.axis_angle_to_quat(jp.array([0, 0, 1]), yaw)
     new_quat = math.quat_mul(qpos[3:7], quat)
     qpos = qpos.at[3:7].set(new_quat)
@@ -645,6 +708,8 @@ class BridgeCrossing(go1_base.Go1Env):
 
   def _get_success(self, data: mjx.Data) -> jax.Array:
     # Robot has confidently crossed — reached halfway into Platform B.
+    if self._config.task == "stand":
+      return jp.zeros((), dtype=bool)  # no success event: survive to timeout
     return data.qpos[0] >= self._config.goal_x
 
   def _get_obs(
@@ -806,6 +871,7 @@ class BridgeCrossing(go1_base.Go1Env):
         )),
         "roll": jp.square(roll),
         "alive": jp.ones(()),
+        "stand_pos": jp.square(data.qpos[0] - info["init_x"]),
         "torques": self._cost_torques(data.actuator_force),
         "action_rate": self._cost_action_rate(
             action, info["last_act"], info["last_last_act"]
