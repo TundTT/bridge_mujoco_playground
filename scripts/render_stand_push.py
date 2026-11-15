@@ -3,7 +3,7 @@
 Each panel is one episode of the stand task on the box beam. At --push_time the
 trunk gets one 0.1 s half-sine lateral push of --impulse N*s (the same push
 eval_push_tolerance.py applies). The red arrow shows the push force. The
-camera looks along the beam from behind, so roll and the tail swing are both
+camera looks along the beam from behind the robot, so roll and the tail swing are both
 visible.
 
 Example (on the workstation; mediapy needs ffmpeg on PATH):
@@ -125,7 +125,7 @@ def _frame(renderer, model, data, qpos, force, lookat, args):
   cam = mujoco.MjvCamera()
   cam.type = mujoco.mjtCamera.mjCAMERA_FREE
   cam.lookat[:] = lookat
-  cam.azimuth, cam.elevation, cam.distance = 180.0, -12.0, 1.5
+  cam.azimuth, cam.elevation, cam.distance = 0.0, -15.0, 1.35  # from behind
   renderer.update_scene(data, cam)
   f = np.linalg.norm(force)
   if f > 1.0:  # push arrow, pointing along the force, ending at the trunk
@@ -210,7 +210,9 @@ def main():
       if env.mj_model.nq > 19:
         lines.append((f"tail {np.rad2deg(qpos[19]):+5.0f} deg", (20, 60, 160)))
       if push_k <= k < push_k + int(round(args.duration / dt)) + 1:
-        lines.append((f"PUSH {args.impulse:g} N*s ({args.side})", (200, 20, 20)))
+        arrow = "-->" if args.side == "right" else "<--"
+        lines.append((f"PUSH {args.impulse:g} N*s {arrow} (to robot's {args.side})",
+                      (200, 20, 20)))
       if fell is not None and k >= fell:
         lines.append(("FELL", (200, 20, 20)))
       row.append(_label(img, lines))
