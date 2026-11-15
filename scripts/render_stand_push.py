@@ -6,7 +6,7 @@ eval_push_tolerance.py applies). The red arrow shows the push force. The
 camera looks along the beam from behind, so roll and the tail swing are both
 visible.
 
-Example (on the workstation; needs an ffmpeg, e.g. imageio-ffmpeg):
+Example (on the workstation; mediapy needs ffmpeg on PATH):
   MUJOCO_GL=egl python scripts/render_stand_push.py \
     --panel active:Go2BridgeCrossingTail:<ckpt> \
     --panel locked:Go2BridgeCrossingTail:<ckpt> \
@@ -18,9 +18,9 @@ import argparse
 import json
 import pathlib
 
-import imageio.v2 as imageio
 import jax
 import jax.numpy as jp
+import mediapy
 import mujoco
 import numpy as np
 from brax.training import checkpoint as brax_checkpoint
@@ -221,8 +221,7 @@ def main():
   fps = round(1.0 / dt / args.slowmo)
   out = pathlib.Path(args.out)
   out.parent.mkdir(parents=True, exist_ok=True)
-  imageio.mimwrite(out, frames, fps=fps, codec="libx264", quality=8,
-                   macro_block_size=16)
+  mediapy.write_video(out, frames, fps=fps)
   print(f"wrote {out} ({len(frames)} frames at {fps} fps)")
 
 
