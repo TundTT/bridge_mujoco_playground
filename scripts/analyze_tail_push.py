@@ -43,8 +43,13 @@ def _load(root: pathlib.Path):
     for sub in ("eval", "eval_fine"):
       for f in sorted((root / cond / sub).glob("*.json")):
         evals[(cond, f.stem)] = json.loads(f.read_text())
-        if sub == "eval_fine":
+        # Fine sweep = 0.5 N*s steps (eval_fine/, or eval/ once it became
+        # the default sweep).
+        imp = [r["impulse_Ns"] for r in evals[(cond, f.stem)]["results"]]
+        if sub == "eval_fine" or any(b - a <= 0.5 for a, b in zip(imp, imp[1:])):
           fine.add((cond, f.stem))
+        else:
+          fine.discard((cond, f.stem))
     m = root / cond / "manifest.tsv"
     if m.exists():
       with m.open() as fh:
