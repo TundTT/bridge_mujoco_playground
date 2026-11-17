@@ -39,6 +39,12 @@
         <geom type="sphere" size="0.0175" pos="-0.002 0 -0.213" solimp="0.9 .95 0.0175"
               contype="0" conaffinity="1" group="3"/>
       </default>
+      <!-- Leg collision capsules (thigh, upper and lower calf), approximating the
+           Menagerie Go2 collision primitives. Off here (conaffinity 0); the env
+           turns them on against the bridge only when leg_collision=True. -->
+      <default class="legcol">
+        <geom type="capsule" condim="3" friction="0.6" contype="0" conaffinity="0" group="3"/>
+      </default>
     </default>
   </default>
 
@@ -93,6 +99,7 @@
           <joint name="FR_thigh_joint" class="hip"/>
           <geom mesh="thigh_mirror_0" material="metal" class="visual"/>
           <geom mesh="thigh_mirror_1" material="gray" class="visual"/>
+          <geom name="FR_thigh_legcol" class="legcol" size="0.017" fromto="0 0 -0.017 0 0 -0.196"/>
           <body name="FR_calf" pos="0 0 -0.213">
             <inertial pos="0.00629595 0.000622121 -0.141417" quat="0.703508 -0.00450087 0.00154099 0.710672"
               mass="0.241352" diaginertia="0.0014901 0.00146356 5.31397e-05"/>
@@ -101,6 +108,8 @@
             <geom mesh="calf_mirror_1" material="black" class="visual"/>
             <geom pos="0 0 -0.213" mesh="foot" class="visual" material="black"/>
             <geom name="FR" class="foot"/>
+            <geom name="FR_calf1_legcol" class="legcol" size="0.013" fromto="-0.002 0 -0.001 0.022 0 -0.119"/>
+            <geom name="FR_calf2_legcol" class="legcol" size="0.011" fromto="0.0216 0 -0.1155 0.0184 0 -0.1805"/>
             <site name="FR" pos="-0.002 0 -0.213" type="sphere" size="0.0175" group="5"/>
           </body>
         </body>
@@ -117,6 +126,7 @@
           <joint name="FL_thigh_joint" class="hip"/>
           <geom mesh="thigh_0" material="metal" class="visual"/>
           <geom mesh="thigh_1" material="gray" class="visual"/>
+          <geom name="FL_thigh_legcol" class="legcol" size="0.017" fromto="0 0 -0.017 0 0 -0.196"/>
           <body name="FL_calf" pos="0 0 -0.213">
             <inertial pos="0.00629595 -0.000622121 -0.141417" quat="0.710672 0.00154099 -0.00450087 0.703508"
               mass="0.241352" diaginertia="0.0014901 0.00146356 5.31397e-05"/>
@@ -125,6 +135,8 @@
             <geom mesh="calf_1" material="black" class="visual"/>
             <geom pos="0 0 -0.213" mesh="foot" class="visual" material="black"/>
             <geom name="FL" class="foot"/>
+            <geom name="FL_calf1_legcol" class="legcol" size="0.013" fromto="-0.002 0 -0.001 0.022 0 -0.119"/>
+            <geom name="FL_calf2_legcol" class="legcol" size="0.011" fromto="0.0216 0 -0.1155 0.0184 0 -0.1805"/>
             <site name="FL" pos="-0.002 0 -0.213" type="sphere" size="0.0175" group="5"/>
           </body>
         </body>
@@ -141,6 +153,7 @@
           <joint name="RR_thigh_joint" class="hip"/>
           <geom mesh="thigh_mirror_0" material="metal" class="visual"/>
           <geom mesh="thigh_mirror_1" material="gray" class="visual"/>
+          <geom name="RR_thigh_legcol" class="legcol" size="0.017" fromto="0 0 -0.017 0 0 -0.196"/>
           <body name="RR_calf" pos="0 0 -0.213">
             <inertial pos="0.00629595 0.000622121 -0.141417" quat="0.703508 -0.00450087 0.00154099 0.710672"
               mass="0.241352" diaginertia="0.0014901 0.00146356 5.31397e-05"/>
@@ -149,6 +162,8 @@
             <geom mesh="calf_mirror_1" material="black" class="visual"/>
             <geom pos="0 0 -0.213" mesh="foot" class="visual" material="black"/>
             <geom name="RR" class="foot"/>
+            <geom name="RR_calf1_legcol" class="legcol" size="0.013" fromto="-0.002 0 -0.001 0.022 0 -0.119"/>
+            <geom name="RR_calf2_legcol" class="legcol" size="0.011" fromto="0.0216 0 -0.1155 0.0184 0 -0.1805"/>
             <site name="RR" pos="-0.002 0 -0.213" type="sphere" size="0.0175" group="5"/>
           </body>
         </body>
@@ -165,6 +180,7 @@
           <joint name="RL_thigh_joint" class="hip"/>
           <geom mesh="thigh_0" material="metal" class="visual"/>
           <geom mesh="thigh_1" material="gray" class="visual"/>
+          <geom name="RL_thigh_legcol" class="legcol" size="0.017" fromto="0 0 -0.017 0 0 -0.196"/>
           <body name="RL_calf" pos="0 0 -0.213">
             <inertial pos="0.00629595 -0.000622121 -0.141417" quat="0.710672 0.00154099 -0.00450087 0.703508"
               mass="0.241352" diaginertia="0.0014901 0.00146356 5.31397e-05"/>
@@ -173,6 +189,8 @@
             <geom mesh="calf_1" material="black" class="visual"/>
             <geom pos="0 0 -0.213" mesh="foot" class="visual" material="black"/>
             <geom name="RL" class="foot"/>
+            <geom name="RL_calf1_legcol" class="legcol" size="0.013" fromto="-0.002 0 -0.001 0.022 0 -0.119"/>
+            <geom name="RL_calf2_legcol" class="legcol" size="0.011" fromto="0.0216 0 -0.1155 0.0184 0 -0.1805"/>
             <site name="RL" pos="-0.002 0 -0.213" type="sphere" size="0.0175" group="5"/>
           </body>
         </body>

@@ -95,6 +95,11 @@ def default_config() -> config_dict.ConfigDict:
       stand_foot_y_frac=0.5,
       stand_foot_y_max=0.05,
       stand_yaw_jitter=0.05,  # rad
+      # Leg collision: the feet-only model lets thighs and knees pass through
+      # the beam (a standing policy learned to sink its rear knees into it).
+      # True turns on the *_legcol capsules against the bridge geom only
+      # (Go2 models).
+      leg_collision=False,
       # Random external pushes on the trunk (disabled by default so existing
       # runs are unchanged). Each push is a half-sine force pulse on the trunk
       # with a sampled impulse in N*s, so the same "shove" is applied whatever
@@ -208,6 +213,15 @@ class BridgeCrossing(go1_base.Go1Env):
       )
     else:
       raise ValueError(f"Unsupported bridge_shape: {self._config.bridge_shape}")
+    if self._config.leg_collision:
+      # Bit 2 pairs the leg capsules with the bridge only (platforms keep
+      # contype 1, feet keep conaffinity 1, so feet contacts are unchanged).
+      leg_ids = [i for i in range(self._mj_model.ngeom)
+                 if self._mj_model.geom(i).name.endswith("_legcol")]
+      if not leg_ids:
+        raise ValueError("leg_collision=True but the model has no *_legcol geoms")
+      self._mj_model.geom_conaffinity[leg_ids] = 2
+      self._mj_model.geom_contype[bridge_id] |= 2
     mujoco.mj_setConst(self._mj_model, mujoco.MjData(self._mj_model))
     self._mjx_model = mjx.put_model(self._mj_model, impl=self._config.impl)
 
