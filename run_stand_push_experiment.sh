@@ -31,7 +31,17 @@ CONDITION="${CONDITION:?set CONDITION=active|locked|notail}"
 DRY_RUN="${DRY_RUN:-0}"
 SCALE="${SCALE:-1}"
 WALK_ROOT="${WALK_ROOT:-results/tail_push_go2}"
-RESULTS_ROOT="${RESULTS_ROOT:-results/stand_push_go2}"
+# Leg collision against the beam (thighs/calves). 1 = on (default since the
+# first run, where the active-tail policy sank its rear knees into the beam).
+LEG_COLLISION="${LEG_COLLISION:-1}"
+if [ "$LEG_COLLISION" = "1" ]; then
+  RESULTS_ROOT="${RESULTS_ROOT:-results/stand_push_go2_legcol}"
+else
+  RESULTS_ROOT="${RESULTS_ROOT:-results/stand_push_go2}"
+fi
+# Rewrite walking-checkpoint paths from the manifest when running on another
+# machine: CKPT_REMAP="/old/prefix=/new/prefix".
+CKPT_REMAP="${CKPT_REMAP:-}"
 WANDB_PROJECT="${WANDB_PROJECT:-bridge_stand_push_go2}"
 USE_WANDB="${USE_WANDB:-1}"
 EVAL_TRIALS="${EVAL_TRIALS:-512}"
@@ -48,6 +58,7 @@ case "$CONDITION" in
   *) echo "unknown CONDITION=$CONDITION" >&2; exit 1 ;;
 esac
 STAND_OVR='"task": "stand", "reward_config.scales.alive": 10.0, "reward_config.scales.stand_pos": -10.0, "reward_config.scales.frontier_delta": 0.0, "reward_config.scales.success": 0.0, "reward_config.scales.feet_air_time": 0.0'
+if [ "$LEG_COLLISION" = "1" ]; then STAND_OVR="$STAND_OVR, \"leg_collision\": true"; fi
 
 if [ "$DRY_RUN" != "1" ] && [ -z "${SKIP_VENV:-}" ]; then
   # shellcheck disable=SC1091
@@ -70,6 +81,7 @@ walk_ckpt() {  # stage name in the walking manifest -> checkpoint
   local c
   c=$(awk -v s="$1" -F'\t' '$1==s {print $3}' "${WALK_ROOT}/${CONDITION}/manifest.tsv" | tail -1)
   if [ -z "$c" ]; then echo "no $1 in ${WALK_ROOT}/${CONDITION}/manifest.tsv" >&2; exit 1; fi
+  if [ -n "$CKPT_REMAP" ]; then c="${c/${CKPT_REMAP%%=*}/${CKPT_REMAP#*=}}"; fi
   echo "$c"
 }
 
