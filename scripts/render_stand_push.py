@@ -56,6 +56,8 @@ def _parse_args():
   p.add_argument("--impulse", type=float, default=15.0, help="N*s")
   p.add_argument("--duration", type=float, default=0.1, help="push length (s)")
   p.add_argument("--side", choices=("left", "right"), default="right")
+  p.add_argument("--leg_collision", action="store_true",
+                 help="turn on Go2 leg-vs-beam collision (match how the policy was trained)")
   p.add_argument("--push_time", type=float, default=2.0, help="s")
   p.add_argument("--start", type=float, default=1.5, help="video start (s)")
   p.add_argument("--end", type=float, default=6.0, help="video end (s)")
@@ -90,6 +92,8 @@ def _rollout(cond, env_name, ckpt, args, seed):
          "bridge_half_width": args.hw, "virtual_hw_min": args.vhw_min,
          "push_config.enable": True, "push_config.interval": [1e6, 1e6],
          "push_config.impulse": [0.0, 0.0]}
+  if args.leg_collision:
+    ovr["leg_collision"] = True
   env = registry.load(env_name, config_overrides=ovr)
   infer = _policy(env, env_name, ckpt)
   reset, step = jax.jit(env.reset), jax.jit(env.step)
