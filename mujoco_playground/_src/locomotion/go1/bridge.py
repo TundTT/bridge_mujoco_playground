@@ -220,8 +220,14 @@ class BridgeCrossing(go1_base.Go1Env):
                  if self._mj_model.geom(i).name.endswith("_legcol")]
       if not leg_ids:
         raise ValueError("leg_collision=True but the model has no *_legcol geoms")
-      self._mj_model.geom_conaffinity[leg_ids] = 2
-      self._mj_model.geom_contype[bridge_id] |= 2
+      m = self._mj_model
+      m.geom_conaffinity[leg_ids] = 2
+      m.geom_contype[bridge_id] |= 2
+      # The broadphase also filters on per-body flags (OR of the body's geoms),
+      # which the compiler set before this patch.
+      for i in leg_ids:
+        m.body_conaffinity[m.geom_bodyid[i]] |= 2
+      m.body_contype[m.geom_bodyid[bridge_id]] |= 2
     mujoco.mj_setConst(self._mj_model, mujoco.MjData(self._mj_model))
     self._mjx_model = mjx.put_model(self._mj_model, impl=self._config.impl)
 
